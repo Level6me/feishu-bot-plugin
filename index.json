@@ -8,6 +8,14 @@
     "description": "监控 CPU 负载、内存率、磁盘余量，发送 /sysinfo 即可查看"
   },
   {
+    "id": "rpi_gpio_status",
+    "name": "🍓 树莓派 GPIO 状态灯指示",
+    "author": "Antigravity",
+    "version": "1.0.0",
+    "repo_url": "https://github.com/Level6me/feishu-bot-plugin",
+    "description": "通过树莓派 GPIO 控制红绿黄三色 LED 灯，实时展现 AI 任务状态"
+  },
+  {
     "id": "cron_scheduler",
     "name": "⏱️ 计划任务与定时调度插件",
     "author": "Antigravity",
