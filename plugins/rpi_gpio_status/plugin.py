@@ -24,6 +24,7 @@ class RpiGpioStatusPlugin(BasePlugin):
         self.blink_interval = cfg.get("blink_interval_sec", 0.3)
         self._blinking_thread = None
         self._stop_blink = False
+        self.current_color = "green"
 
         if GPIO_AVAILABLE:
             try:
@@ -61,6 +62,7 @@ class RpiGpioStatusPlugin(BasePlugin):
     def set_state_idle(self):
         """State: Standby / Ready -> Green ON, Yellow OFF, Red OFF."""
         self._stop_active_blinking()
+        self.current_color = "green"
         self._set_pin("green", True)
         self._set_pin("yellow", False)
         self._set_pin("red", False)
@@ -68,6 +70,7 @@ class RpiGpioStatusPlugin(BasePlugin):
     def set_state_running(self):
         """State: AI Executing / Thinking -> Yellow ON, Green OFF, Red OFF."""
         self._stop_active_blinking()
+        self.current_color = "yellow"
         self._set_pin("green", False)
         self._set_pin("red", False)
         self._set_pin("yellow", True)
@@ -75,6 +78,7 @@ class RpiGpioStatusPlugin(BasePlugin):
     def set_state_success(self):
         """State: Execution Finished Successfully -> Green ON, Yellow OFF, Red OFF."""
         self._stop_active_blinking()
+        self.current_color = "green"
         self._set_pin("yellow", False)
         self._set_pin("red", False)
         self._set_pin("green", True)
@@ -82,6 +86,7 @@ class RpiGpioStatusPlugin(BasePlugin):
     def set_state_error(self):
         """State: Execution Failed / Exception -> Red ON, Yellow OFF, Green OFF."""
         self._stop_active_blinking()
+        self.current_color = "red"
         self._set_pin("green", False)
         self._set_pin("yellow", False)
         self._set_pin("red", True)
@@ -99,47 +104,117 @@ class RpiGpioStatusPlugin(BasePlugin):
             self.set_state_success()
         return ai_response_text
 
+    def build_control_card(self, active_color: str = None) -> dict:
+        if active_color is None:
+            active_color = self.current_color
+
+        gpio_mode = "硬件 RPi.GPIO 物理接口" if GPIO_AVAILABLE else "模拟日志模式 (Non-RPi)"
+        
+        status_badge = "🟢 系统就绪 (Green ON)"
+        header_template = "green"
+        if active_color == "yellow":
+            status_badge = "🟡 任务运行中 (Yellow ON)"
+            header_template = "yellow"
+        elif active_color == "red":
+            status_badge = "🔴 异常告警 (Red ON)"
+            header_template = "red"
+        elif active_color == "off":
+            status_badge = "⚪ 所有指示灯已关闭 (All OFF)"
+            header_template = "wathet"
+
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": "💡 树莓派 LED 状态指示灯控制台"},
+                "template": header_template
+            },
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": f"**当前设备灯光状态**：`{status_badge}`\n"
+                               f"**硬件工作模式**：`{gpio_mode}`\n\n"
+                               f"**GPIO 引脚映射 (BCM 编码)**：\n"
+                               f"• 🔴 **红灯 (Error)**：GPIO `{self.pins.get('red')}`\n"
+                               f"• 🟡 **黄灯 (Running)**：GPIO `{self.pins.get('yellow')}`\n"
+                               f"• 🟢 **绿灯 (Ready)**：GPIO `{self.pins.get('green')}`"
+                },
+                {"tag": "hr"},
+                {
+                    "tag": "markdown",
+                    "content": "**🎛️ 快捷交互控制按钮组（点击即刻控制指示灯）：**"
+                },
+                {
+                    "tag": "action",
+                    "layout": "flow",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "🟢 点亮绿灯 (就绪)"},
+                            "type": "primary",
+                            "value": {"action": "set_rpi_light", "color": "green"}
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "🟡 点亮黄灯 (运行)"},
+                            "type": "warning",
+                            "value": {"action": "set_rpi_light", "color": "yellow"}
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "🔴 点亮红灯 (错误)"},
+                            "type": "danger",
+                            "value": {"action": "set_rpi_light", "color": "red"}
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "⚪ 关闭所有灯"},
+                            "type": "default",
+                            "value": {"action": "set_rpi_light", "color": "off"}
+                        }
+                    ]
+                }
+            ]
+        }
+        return card
+
     async def on_command(self, command: str, args: str, chat_id: str, message_id: str, session_data: dict) -> bool:
         if command.lower() in ["/light", "/led"]:
             sub_cmd = args.strip().lower()
             if sub_cmd == "red":
                 self.set_state_error()
-                self.send_reply_text(message_id, "🔴 红色 LED 指示灯已切换为常亮 (模拟任务报错)。")
             elif sub_cmd == "yellow":
                 self.set_state_running()
-                self.send_reply_text(message_id, "🟡 黄色 LED 指示灯已切换为常亮 (模拟 AI 运行中)。")
             elif sub_cmd == "green":
                 self.set_state_success()
-                self.send_reply_text(message_id, "🟢 绿色 LED 指示灯已切换为常亮 (模拟系统就绪)。")
             elif sub_cmd == "off":
                 self._stop_active_blinking()
+                self.current_color = "off"
                 for p in ["red", "yellow", "green"]:
                     self._set_pin(p, False)
-                self.send_reply_text(message_id, "⚪ 所有 GPIO LED 指示灯已关闭。")
-            else:
-                gpio_mode = "硬件 RPi.GPIO 物理接口" if GPIO_AVAILABLE else "模拟日志模式 (Non-RPi)"
-                info_card = {
-                    "config": {"wide_screen_mode": True},
-                    "header": {
-                        "title": {"tag": "plain_text", "content": "💡 树莓派 LED 状态指示灯控制台"},
-                        "template": "wathet"
-                    },
-                    "elements": [
-                        {
-                            "tag": "markdown",
-                            "content": f"**当前硬件工作模式**：`{gpio_mode}`\n\n"
-                                       f"**GPIO 引脚映射 (BCM 编号)**：\n"
-                                       f"• 🔴 **红灯 (Error/Fault)**：GPIO `{self.pins.get('red')}`\n"
-                                       f"• 🟡 **黄灯 (Running/Thinking)**：GPIO `{self.pins.get('yellow')}`\n"
-                                       f"• 🟢 **绿灯 (Ready/Idle)**：GPIO `{self.pins.get('green')}`\n\n"
-                                       f"**测试控制命令**：\n"
-                                       f"• `/light green` - 点亮绿灯 (就绪状态)\n"
-                                       f"• `/light yellow` - 点亮黄灯 (运行状态)\n"
-                                       f"• `/light red` - 点亮红灯 (异常状态)\n"
-                                       f"• `/light off` - 关闭全部指示灯"
-                        }
-                    ]
-                }
-                self.send_reply_card(message_id, info_card)
+
+            card = self.build_control_card()
+            self.send_reply_card(message_id, card)
+            return True
+        return False
+
+    async def on_card_action(self, action: str, value: dict, chat_id: str, card_message_id: str) -> bool:
+        act = action or (value.get("action") if isinstance(value, dict) else "")
+        if act == "set_rpi_light":
+            color = value.get("color", "") if isinstance(value, dict) else ""
+            if color == "green":
+                self.set_state_success()
+            elif color == "yellow":
+                self.set_state_running()
+            elif color == "red":
+                self.set_state_error()
+            elif color == "off":
+                self._stop_active_blinking()
+                self.current_color = "off"
+                for p in ["red", "yellow", "green"]:
+                    self._set_pin(p, False)
+
+            card = self.build_control_card(active_color=color)
+            from lark_client import patch_interactive_card_sdk
+            patch_interactive_card_sdk(card_message_id, card)
             return True
         return False
