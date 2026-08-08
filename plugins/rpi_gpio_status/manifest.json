@@ -4,6 +4,6 @@
   "version": "1.0.0",
   "author": "Antigravity",
   "description": "通过树莓派 GPIO 引脚控制红绿黄三色 LED 灯，实时展现 AI 任务的就绪、运行中、成功及异常状态",
-  "commands": ["/gpio", "/led"],
+  "commands": ["/light", "/led"],
   "enabled": true
 }

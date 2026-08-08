@@ -100,7 +100,7 @@ class RpiGpioStatusPlugin(BasePlugin):
         return ai_response_text
 
     async def on_command(self, command: str, args: str, chat_id: str, message_id: str, session_data: dict) -> bool:
-        if command.lower() in ["/gpio", "/led"]:
+        if command.lower() in ["/light", "/led"]:
             sub_cmd = args.strip().lower()
             if sub_cmd == "red":
                 self.set_state_error()
@@ -121,7 +121,7 @@ class RpiGpioStatusPlugin(BasePlugin):
                 info_card = {
                     "config": {"wide_screen_mode": True},
                     "header": {
-                        "title": {"tag": "plain_text", "content": "🍓 树莓派 GPIO 状态指示灯控制台"},
+                        "title": {"tag": "plain_text", "content": "💡 树莓派 LED 状态指示灯控制台"},
                         "template": "wathet"
                     },
                     "elements": [
@@ -133,10 +133,10 @@ class RpiGpioStatusPlugin(BasePlugin):
                                        f"• 🟡 **黄灯 (Running/Thinking)**：GPIO `{self.pins.get('yellow')}`\n"
                                        f"• 🟢 **绿灯 (Ready/Idle)**：GPIO `{self.pins.get('green')}`\n\n"
                                        f"**测试控制命令**：\n"
-                                       f"• `/gpio green` - 点亮绿灯 (就绪状态)\n"
-                                       f"• `/gpio yellow` - 点亮黄灯 (运行状态)\n"
-                                       f"• `/gpio red` - 点亮红灯 (异常状态)\n"
-                                       f"• `/gpio off` - 关闭全部指示灯"
+                                       f"• `/light green` - 点亮绿灯 (就绪状态)\n"
+                                       f"• `/light yellow` - 点亮黄灯 (运行状态)\n"
+                                       f"• `/light red` - 点亮红灯 (异常状态)\n"
+                                       f"• `/light off` - 关闭全部指示灯"
                         }
                     ]
                 }

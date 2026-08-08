@@ -1,4 +1,4 @@
-# 🍓 树莓派 GPIO 状态指示灯插件 (RPi GPIO Status Plugin)
+# 💡 树莓派 LED 状态指示灯插件 (RPi Status Light Plugin)
 
 本插件为 `antigravity-feishu-bot` 提供了针对树莓派 (Raspberry Pi) 的硬件级运行状态可视化解决方案。通过物理 GPIO 引脚驱动**红、黄、绿**三色 LED 灯，实时呈现 AI 引擎的工作状态。
 
@@ -18,7 +18,7 @@
 
 使用标准 330Ω 限流电阻与 3 颗 LED 灯，引脚默认使用 **BCM 编码**：
 
-| LED 颜色 | GPIO 引脚 (BCM) | 树莓派物理 Pin | 串接电阻 |
+| LED 颜色 | GPIO 引脚 (BCM) | 树莓派物理 Pin | 限流电阻配置 |
 | :--- | :--- | :--- | :--- |
 | 🔴 **红灯** | `GPIO 17` | Pin 11 | 330Ω 电阻 -> GND |
 | 🟡 **黄灯** | `GPIO 27` | Pin 13 | 330Ω 电阻 -> GND |
@@ -46,8 +46,8 @@
 
 ## 💬 飞书指令支持
 
-- `/gpio` - 查看 GPIO 当前工作模式与引脚映射表
-- `/gpio green` - 手动点亮绿灯 (测试系统就绪)
-- `/gpio yellow` - 手动点亮黄灯 (测试运行状态)
-- `/gpio red` - 手动点亮红灯 (测试错误状态)
-- `/gpio off` - 手动关闭所有指示灯
+- `/light` - 查看 LED 当前工作模式与引脚映射表
+- `/light green` - 手动点亮绿灯 (测试系统就绪)
+- `/light yellow` - 手动点亮黄灯 (测试运行状态)
+- `/light red` - 手动点亮红灯 (测试错误状态)
+- `/light off` - 手动关闭所有指示灯
