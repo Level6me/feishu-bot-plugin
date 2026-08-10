@@ -7,13 +7,29 @@ import threading
 from plugin_base import BasePlugin
 from logger import log
 
-# Gracefully import RPi.GPIO or fallback to Mock Mode on non-Raspberry Pi environments
+# Multi-backend GPIO import (gpiozero with LGPIOFactory as primary)
 GPIO_AVAILABLE = False
+gpio_mode = "NONE"
+
 try:
-    import RPi.GPIO as GPIO
+    from gpiozero import LED
+    from gpiozero.pins.lgpio import LGPIOFactory
+    import gpiozero
+    gpiozero.Device.pin_factory = LGPIOFactory()
     GPIO_AVAILABLE = True
+    gpio_mode = "GPIOZERO_LGPIO"
 except Exception:
-    GPIO = None
+    try:
+        import RPi.GPIO as GPIO
+        GPIO_AVAILABLE = True
+        gpio_mode = "RPI_GPIO"
+    except Exception:
+        try:
+            import rpi_lgpio as GPIO
+            GPIO_AVAILABLE = True
+            gpio_mode = "RPI_LGPIO"
+        except Exception:
+            GPIO = None
 
 
 class RpiGpioStatusPlugin(BasePlugin):
@@ -25,18 +41,24 @@ class RpiGpioStatusPlugin(BasePlugin):
         self._blinking_thread = None
         self._stop_blink = False
         self.current_color = "green"
+        self.led_objects = {}
 
         if GPIO_AVAILABLE:
             try:
-                GPIO.setmode(GPIO.BCM)
-                GPIO.setwarnings(False)
-                for pin in self.pins.values():
-                    GPIO.setup(pin, GPIO.OUT)
-                log.info(f"[Plugin:{self.plugin_id}] GPIO initialized successfully (BCM Pins: {self.pins}).")
+                if gpio_mode == "GPIOZERO_LGPIO":
+                    for name, p in self.pins.items():
+                        self.led_objects[name] = LED(p)
+                    log.info(f"[Plugin:{self.plugin_id}] Physical Raspberry Pi GPIO initialized via LGPIOFactory (Pins: {self.pins}).")
+                elif gpio_mode in ("RPI_GPIO", "RPI_LGPIO") and globals().get('GPIO') is not None:
+                    GPIO.setmode(GPIO.BCM)
+                    GPIO.setwarnings(False)
+                    for pin in self.pins.values():
+                        GPIO.setup(pin, GPIO.OUT)
+                    log.info(f"[Plugin:{self.plugin_id}] Physical Raspberry Pi GPIO initialized via {gpio_mode} (BCM Pins: {self.pins}).")
             except Exception as e:
                 log.error(f"[Plugin:{self.plugin_id}] Failed to init GPIO pins: {e}")
         else:
-            log.info(f"[Plugin:{self.plugin_id}] RPi.GPIO module not detected. Running in Mock/Simulation mode.")
+            log.info(f"[Plugin:{self.plugin_id}] RPi.GPIO/lgpio module not detected. Running in Mock/Simulation mode.")
 
         # Default Standby State (Green LED ON)
         self.set_state_idle()
@@ -47,7 +69,14 @@ class RpiGpioStatusPlugin(BasePlugin):
             return
         if GPIO_AVAILABLE:
             try:
-                GPIO.output(pin, GPIO.HIGH if state else GPIO.LOW)
+                if gpio_mode == "GPIOZERO_LGPIO" and pin_name in self.led_objects:
+                    if state:
+                        self.led_objects[pin_name].on()
+                    else:
+                        self.led_objects[pin_name].off()
+                elif globals().get('GPIO') is not None:
+                    GPIO.setup(pin, GPIO.OUT)
+                    GPIO.output(pin, GPIO.HIGH if state else GPIO.LOW)
             except Exception as e:
                 log.error(f"[Plugin:{self.plugin_id}] GPIO output error on pin {pin}: {e}")
         else:
@@ -108,7 +137,7 @@ class RpiGpioStatusPlugin(BasePlugin):
         if active_color is None:
             active_color = self.current_color
 
-        gpio_mode = "硬件 RPi.GPIO 物理接口" if GPIO_AVAILABLE else "模拟日志模式 (Non-RPi)"
+        mode_desc = f"硬件 物理接口 ({gpio_mode})" if GPIO_AVAILABLE else "模拟日志模式 (Non-RPi)"
         
         status_badge = "🟢 系统就绪 (Green ON)"
         header_template = "green"
@@ -132,7 +161,7 @@ class RpiGpioStatusPlugin(BasePlugin):
                 {
                     "tag": "markdown",
                     "content": f"**当前设备灯光状态**：`{status_badge}`\n"
-                               f"**硬件工作模式**：`{gpio_mode}`\n\n"
+                               f"**硬件工作模式**：`{mode_desc}`\n\n"
                                f"**GPIO 引脚映射 (BCM 编码)**：\n"
                                f"• 🔴 **红灯 (Error)**：GPIO `{self.pins.get('red')}`\n"
                                f"• 🟡 **黄灯 (Running)**：GPIO `{self.pins.get('yellow')}`\n"
