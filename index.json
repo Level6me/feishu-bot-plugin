@@ -1,5 +1,13 @@
 [
   {
+    "id": "multi_agent",
+    "name": "🤖 多 Agent 自动协同开发插件",
+    "author": "Antigravity",
+    "version": "1.0.0",
+    "repo_url": "https://github.com/Level6me/feishu-bot-plugin",
+    "description": "基于 Bot A 全量监听与 Bot B/C 自动唤醒的多设备并行开发与 Git 集成插件"
+  },
+  {
     "id": "server_health",
     "name": "🖥️ 服务器巡检与健康报告",
     "author": "Antigravity",

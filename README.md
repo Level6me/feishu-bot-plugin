@@ -115,6 +115,7 @@ class MyCustomPlugin(BasePlugin):
 
 | 插件名称 | 插件 ID | 版本 | 注册指令 | README 详细文档 |
 | :--- | :--- | :--- | :--- | :--- |
+| **🤖 多 Agent 自动协同开发** | `multi_agent` | `v1.0.0` | `/agent_assign`, `/multi_agent`, `/agent_config` | [查看说明文档](plugins/multi_agent/README.md) |
 | **🖥️ 服务器巡检与健康报告** | `server_health` | `v1.0.0` | `/sysinfo`, `/health` | [查看说明文档](plugins/server_health/README.md) |
 | **⏱️ 计划任务与定时调度** | `cron_scheduler` | `v2.0.0` | `/cron`, `/schedule` | [查看说明文档](plugins/cron_scheduler/README.md) |
 | **🧠 AI 长期记忆管理** | `ai_memory` | `v2.0.0` | `/memory` | [查看说明文档](plugins/ai_memory/README.md) |
