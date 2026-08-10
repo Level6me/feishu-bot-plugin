@@ -34,41 +34,51 @@ class MultiAgentPlugin(BasePlugin):
 
     async def on_before_ai(self, user_text: str, chat_id: str, session_data: dict) -> tuple[str, dict]:
         """
-        消息前置 Hook (核心权限与角色路由逻辑):
-        1. bot_a (ARCHITECT): 直接监听全量群消息，分析用户是否有多 Agent 协同项目开发的需求；
-        2. bot_b / bot_c (WORKER): 忽略非 @ 消息，只有被 bot_a 在派发卡片中 @ 被提及，或收到带有属于自己的 [TASK_ASSIGN] 指令时才触发。
+        消息前置 Hook (严格校验场景与显式指令意图):
+        1. 必须判断 chat_type == "group"（防私聊误触发）；
+        2. 废除模糊关键词匹配，必须包含显式命令：如 /agent_assign 或 [协同开发]/[项目拆解] 前缀标志。
         """
         clean_text = user_text.strip()
+        chat_type = session_data.get("chat_type", "")
 
         # ----------------------------------------------------
-        # 场景 A: bot_a (ARCHITECT) 监听全量群消息并智能识别协同需求
+        # 严禁在私聊（P2P）中误触发多 Agent 协同流程！
+        # ----------------------------------------------------
+        if chat_type != "group":
+            return user_text, session_data
+
+        # ----------------------------------------------------
+        # 场景 A: bot_a (ARCHITECT) 仅在群聊且带有显式触发标志时才启动需求拆解
         # ----------------------------------------------------
         if self.role == "ARCHITECT":
-            # 判断是否包含协同开发关键词或项目开发意图
-            keywords = ["开发", "协同", "项目", "系统", "App", "网站", "bot", "agent", "拆解", "实现"]
-            has_collaboration_intent = any(kw in clean_text for kw in keywords)
+            # 只有用户显式使用命令或在群里明确要求 [协同开发] / [项目拆解] 时才响应
+            explicit_triggers = ["/agent_assign", "[协同开发]", "[项目拆解]", "【协同开发】", "【项目拆解】"]
+            is_explicit = any(trig in clean_text for trig in explicit_triggers)
 
-            if has_collaboration_intent and not clean_text.startswith("[TASK_ASSIGN]"):
-                log.info(f"[Plugin:{self.plugin_id}] 👑 [Bot A - 架构师] 识别到群聊用户项目需求: {clean_text}")
+            if is_explicit and not clean_text.startswith("[TASK_ASSIGN]"):
+                log.info(f"[Plugin:{self.plugin_id}] 👑 [Bot A - 架构师] 捕获群聊显式项目协同需求: {clean_text}")
                 
                 project_id = f"proj_{int(datetime.now().timestamp())}"
                 
+                # 剥离触发词提取真实需求
+                req_content = clean_text
+                for trig in explicit_triggers:
+                    req_content = req_content.replace(trig, "")
+                req_content = req_content.strip() or clean_text
+
                 # 在群里回发初始化卡片
-                card = self.build_task_assign_card(project_id, clean_text)
+                card = self.build_task_assign_card(project_id, req_content)
                 self.send_card(chat_id, card)
 
                 # 后台唤醒 antigravity-cli 进行需求分析与分工派发 (包含 @Bot_B 和 @Bot_C)
-                asyncio.create_task(self.async_architect_analyze_and_dispatch(project_id, clean_text, chat_id))
+                asyncio.create_task(self.async_architect_analyze_and_dispatch(project_id, req_content, chat_id))
 
         # ----------------------------------------------------
-        # 场景 B: bot_b / bot_c (WORKER) 只有被 @ 或定向派发才触发
+        # 场景 B: bot_b / bot_c (WORKER) 只有在群聊且收到明确的 [TASK_ASSIGN] 派发时才响应
         # ----------------------------------------------------
         elif "WORKER" in self.role:
-            # 必须包含指派给本 Worker 节点的标识（如 target:WORKER_BACKEND 或 target:WORKER_FRONTEND）
             if "[TASK_ASSIGN]" in clean_text and f"target:{self.role}" in clean_text:
-                log.info(f"[Plugin:{self.plugin_id}] 🎯 [{self.role}] 被 Bot A 正确 @ 提及并捕获专属任务！")
-                
-                # 触发被 @ 的 Worker 自动领单与开发
+                log.info(f"[Plugin:{self.plugin_id}] 🎯 [{self.role}] 被 Bot A 在群里正确 @ 提及并捕获专属任务！")
                 asyncio.create_task(self.async_run_worker_cli(clean_text, chat_id))
 
         return user_text, session_data
@@ -185,7 +195,7 @@ class MultiAgentPlugin(BasePlugin):
                 "template": "green"
             },
             "elements": [
-                {"tag": "div", "text": {"tag": "lark_md", "content": f"• **当前节点**: `{self.role}`\n• **权限策略**: Bot A 监听全量群消息 / Bot B & C 被 @ 唤醒"}}
+                {"tag": "div", "text": {"tag": "lark_md", "content": f"• **当前节点**: `{self.role}`\n• **权限策略**: 仅限群聊 + 显式指令触发 / 私聊严格过滤"}}
             ]
         }
 
