@@ -61,6 +61,56 @@ class MultiAgentPlugin(BasePlugin):
             return True
         return False
 
+    async def on_before_ai(self, user_text: str, chat_id: str, session_data: dict) -> tuple[str, dict]:
+        clean_text = user_text.strip()
+        chat_type = session_data.get("chat_type", "")
+
+        # ----------------------------------------------------
+        # 针对 /agent_config 和 /multi_agent 指令的防御拦截：
+        # 如果是发送斜杠配置指令，直接拦截阻止后续 AI 管道输出普通文本
+        # ----------------------------------------------------
+        if clean_text.startswith("/agent_config"):
+            log.info(f"[Plugin:{self.plugin_id}] 捕获 /agent_config 指令，拦截 AI 默认输出并推送控制卡片")
+            config_card = self.build_panel_config_card()
+            self.send_reply_card(session_data.get("message_id", ""), config_card)
+            # 返回空文本或特殊标识以阻止主工程透传给大模型作为普通文本回答
+            return "", session_data
+
+        elif clean_text.startswith("/multi_agent"):
+            log.info(f"[Plugin:{self.plugin_id}] 捕获 /multi_agent 指令，拦截 AI 默认输出并推送状态卡片")
+            status_card = self.build_status_card()
+            self.send_reply_card(session_data.get("message_id", ""), status_card)
+            return "", session_data
+
+        # 防私聊误触发
+        if chat_type != "group":
+            return user_text, session_data
+
+        if self.role == "ARCHITECT":
+            explicit_triggers = ["/agent_assign", "[协同开发]", "[项目拆解]", "【协同开发】", "【项目拆解】"]
+            is_explicit = any(trig in clean_text for trig in explicit_triggers)
+
+            if is_explicit and not clean_text.startswith("[TASK_ASSIGN]"):
+                log.info(f"[Plugin:{self.plugin_id}] 👑 [Bot A - 架构师] 捕获显式项目协同需求: {clean_text}")
+                project_id = f"proj_{int(datetime.now().timestamp())}"
+                
+                req_content = clean_text
+                for trig in explicit_triggers:
+                    req_content = req_content.replace(trig, "")
+                req_content = req_content.strip() or clean_text
+
+                card = self.build_task_assign_card(project_id, req_content)
+                self.send_card(chat_id, card)
+
+                asyncio.create_task(self.async_architect_analyze_and_dispatch(project_id, req_content, chat_id))
+
+        elif "WORKER" in self.role:
+            if "[TASK_ASSIGN]" in clean_text and f"target:{self.role}" in clean_text:
+                log.info(f"[Plugin:{self.plugin_id}] 🎯 [{self.role}] 被 Bot A 正确 @ 提及并捕获专属任务！")
+                asyncio.create_task(self.async_run_worker_cli(clean_text, chat_id))
+
+        return user_text, session_data
+
     def build_panel_config_card(self) -> dict:
         """构建高级互动按钮功能配置面板卡片"""
         return {
@@ -175,39 +225,6 @@ class MultiAgentPlugin(BasePlugin):
             return True
 
         return False
-
-    async def on_before_ai(self, user_text: str, chat_id: str, session_data: dict) -> tuple[str, dict]:
-        clean_text = user_text.strip()
-        chat_type = session_data.get("chat_type", "")
-
-        # 防私聊误触发
-        if chat_type != "group":
-            return user_text, session_data
-
-        if self.role == "ARCHITECT":
-            explicit_triggers = ["/agent_assign", "[协同开发]", "[项目拆解]", "【协同开发】", "【项目拆解】"]
-            is_explicit = any(trig in clean_text for trig in explicit_triggers)
-
-            if is_explicit and not clean_text.startswith("[TASK_ASSIGN]"):
-                log.info(f"[Plugin:{self.plugin_id}] 👑 [Bot A - 架构师] 捕获显式项目协同需求: {clean_text}")
-                project_id = f"proj_{int(datetime.now().timestamp())}"
-                
-                req_content = clean_text
-                for trig in explicit_triggers:
-                    req_content = req_content.replace(trig, "")
-                req_content = req_content.strip() or clean_text
-
-                card = self.build_task_assign_card(project_id, req_content)
-                self.send_card(chat_id, card)
-
-                asyncio.create_task(self.async_architect_analyze_and_dispatch(project_id, req_content, chat_id))
-
-        elif "WORKER" in self.role:
-            if "[TASK_ASSIGN]" in clean_text and f"target:{self.role}" in clean_text:
-                log.info(f"[Plugin:{self.plugin_id}] 🎯 [{self.role}] 被 Bot A 正确 @ 提及并捕获专属任务！")
-                asyncio.create_task(self.async_run_worker_cli(clean_text, chat_id))
-
-        return user_text, session_data
 
     async def async_architect_analyze_and_dispatch(self, project_id: str, requirement: str, chat_id: str):
         prompt = (
