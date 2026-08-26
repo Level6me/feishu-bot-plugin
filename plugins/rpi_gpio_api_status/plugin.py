@@ -2,15 +2,20 @@
 🍓 Raspberry Pi GPIO LED Status Indicator Plugin (API Gateway Edition)
 for antigravity-feishu-bot.
 
-Connects to the central pi_led_api service (https://github.com/Level6me/pi_led_api)
-via RESTful API & WebSocket for unified hardware control and interactive Feishu cards.
+Features:
+- Connects to central pi_led_api gateway (http://127.0.0.1:8080 / https://piled.abab.pw)
+- Dynamic Gateway URL and Token configuration with persistence (config.json)
+- Live Gateway connectivity & latency test with interactive card feedback
+- Full AI dialogue lifecycle indicators (Thinking, Breathing, Success, Error, Restart)
+- Interactive Feishu Action Cards with instant buttons and timers
 """
 
 import os
 import time
+import json
 import requests
 import threading
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 
 from plugin_base import BasePlugin
 from logger import log
@@ -22,28 +27,50 @@ DEFAULT_API_TOKEN = os.getenv("API_TOKEN", "ipad_pro_secret_888")
 class RpiGpioApiStatusPlugin(BasePlugin):
 
     def initialize(self):
-        cfg = self.get_config() or {}
-        self.enabled = cfg.get("enabled", True)
+        self.config_data = self.get_config() or {}
+        self.enabled = self.config_data.get("enabled", True)
         if not self.enabled:
             log.info(f"[Plugin:{self.plugin_id}] Disabled via config.json.")
             return
 
-        self.api_url = cfg.get("api_url", DEFAULT_API_URL).rstrip("/")
-        self.api_token = cfg.get("api_token", DEFAULT_API_TOKEN)
-        self.auto_indicator = cfg.get("auto_indicator_enabled", True)
-        self.success_duration = int(cfg.get("success_duration_sec", 300))
+        self.api_url = self.config_data.get("api_url", DEFAULT_API_URL).rstrip("/")
+        self.api_token = self.config_data.get("api_token", DEFAULT_API_TOKEN)
+        self.auto_indicator = self.config_data.get("auto_indicator_enabled", True)
+        self.success_duration = int(self.config_data.get("success_duration_sec", 300))
         self.current_state = "off"
+        self.last_test_result: Optional[dict] = None
 
         log.info(f"[Plugin:{self.plugin_id}] Initialized with central gateway at {self.api_url}")
         self.on_startup_complete()
 
-    def _get_headers(self) -> dict:
+    def save_config_file(self, new_configs: dict):
+        """保存配置到插件本地 config.json 并实时热更新内存属性"""
+        self.config_data.update(new_configs)
+        if "api_url" in new_configs:
+            self.api_url = new_configs["api_url"].rstrip("/")
+        if "api_token" in new_configs:
+            self.api_token = new_configs["api_token"]
+        if "auto_indicator_enabled" in new_configs:
+            self.auto_indicator = new_configs["auto_indicator_enabled"]
+        if "success_duration_sec" in new_configs:
+            self.success_duration = int(new_configs["success_duration_sec"])
+
+        config_path = os.path.join(os.path.dirname(__file__), "config.json")
+        try:
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(self.config_data, f, ensure_ascii=False, indent=2)
+            log.info(f"[Plugin:{self.plugin_id}] 配置已成功保存至 {config_path}")
+        except Exception as e:
+            log.error(f"[Plugin:{self.plugin_id}] 保存配置失败: {e}")
+
+    def _get_headers(self, custom_token: Optional[str] = None) -> dict:
+        tok = custom_token if custom_token is not None else self.api_token
         headers = {"Content-Type": "application/json"}
-        if self.api_token:
-            if self.api_token.startswith("ey"):
-                headers["Authorization"] = f"Bearer {self.api_token}"
+        if tok:
+            if tok.startswith("ey"):
+                headers["Authorization"] = f"Bearer {tok}"
             else:
-                headers["X-API-Key"] = self.api_token
+                headers["X-API-Key"] = tok
         return headers
 
     def _call_api_async(self, endpoint: str, method: str = "POST", json_data: Optional[dict] = None):
@@ -72,6 +99,48 @@ class RpiGpioApiStatusPlugin(BasePlugin):
         except Exception as e:
             log.debug(f"[Plugin:{self.plugin_id}] Fetch status error: {e}")
         return None
+
+    def test_gateway_connection(self, custom_url: Optional[str] = None, custom_token: Optional[str] = None) -> dict:
+        """测试目标网关连通性并测量网络 RTT 延迟"""
+        target_url = (custom_url or self.api_url).rstrip("/")
+        headers = self._get_headers(custom_token)
+        start_t = time.perf_counter()
+        try:
+            res = requests.get(f"{target_url}/api/status", headers=headers, timeout=3.0)
+            latency_ms = round((time.perf_counter() - start_t) * 1000, 1)
+            if res.status_code == 200:
+                data = res.json()
+                result = {
+                    "success": True,
+                    "url": target_url,
+                    "status_code": 200,
+                    "latency_ms": latency_ms,
+                    "driver_mode": data.get("hardware", {}).get("mode", "UNKNOWN"),
+                    "gamma_enabled": data.get("hardware", {}).get("gamma_correction", False),
+                    "registered_devices": data.get("auth", {}).get("registered_devices_count", 0),
+                    "timestamp": time.strftime("%H:%M:%S", time.localtime())
+                }
+            else:
+                result = {
+                    "success": False,
+                    "url": target_url,
+                    "status_code": res.status_code,
+                    "latency_ms": latency_ms,
+                    "error": f"HTTP {res.status_code}: {res.text[:100]}",
+                    "timestamp": time.strftime("%H:%M:%S", time.localtime())
+                }
+        except Exception as e:
+            latency_ms = round((time.perf_counter() - start_t) * 1000, 1)
+            result = {
+                "success": False,
+                "url": target_url,
+                "status_code": 0,
+                "latency_ms": latency_ms,
+                "error": str(e),
+                "timestamp": time.strftime("%H:%M:%S", time.localtime())
+            }
+        self.last_test_result = result
+        return result
 
     # ==================== 状态切换快捷函数 ====================
     def on_startup_complete(self):
@@ -103,26 +172,22 @@ class RpiGpioApiStatusPlugin(BasePlugin):
         self._call_api_async("/api/off", "POST")
 
     def on_service_restarting(self):
-        if not getattr(self, "enabled", True):
-            return
+        if not getattr(self, "enabled", True): return
         self.current_state = "restarting_yellow_blink"
         self._call_api_async("/api/state", "POST", {"state": "restarting"})
 
     # ==================== AI 对话生命周期拦截 ====================
     async def on_before_ai(self, user_text: str, chat_id: str, session_data: dict) -> tuple[str, dict]:
-        if not getattr(self, "enabled", True):
-            return user_text, session_data
+        if not getattr(self, "enabled", True): return user_text, session_data
         self.set_state_thinking()
         return user_text, session_data
 
     async def on_tool_call(self, tool_name: str, tool_args: dict):
-        if not getattr(self, "enabled", True):
-            return
+        if not getattr(self, "enabled", True): return
         self.set_state_breathing_yellow()
 
     async def on_after_ai(self, ai_response_text: str, chat_id: str, session_data: dict) -> str:
-        if not getattr(self, "enabled", True):
-            return ai_response_text
+        if not getattr(self, "enabled", True): return ai_response_text
         is_err = session_data.get("last_execution_error", False)
         if not is_err:
             stripped = ai_response_text.strip()
@@ -147,8 +212,30 @@ class RpiGpioApiStatusPlugin(BasePlugin):
 
         if not subcmd or subcmd in ["status", "panel"]:
             snapshot = self._fetch_snapshot_sync()
-            card = self.build_control_card(snapshot)
+            card = self.build_control_card(snapshot, view_mode="control")
             self.send_reply_card(message_id, card)
+            return True
+
+        elif subcmd in ["test", "ping"]:
+            res = self.test_gateway_connection()
+            snapshot = self._fetch_snapshot_sync()
+            card = self.build_control_card(snapshot, view_mode="control", test_banner=res)
+            self.send_reply_card(message_id, card)
+            return True
+
+        elif subcmd == "config":
+            if len(args_parts) >= 2:
+                new_url = args_parts[1].strip()
+                new_token = args_parts[2].strip() if len(args_parts) >= 3 else self.api_token
+                self.save_config_file({"api_url": new_url, "api_token": new_token})
+                res = self.test_gateway_connection()
+                snapshot = self._fetch_snapshot_sync()
+                card = self.build_control_card(snapshot, view_mode="control", test_banner=res)
+                self.send_reply_card(message_id, card)
+            else:
+                snapshot = self._fetch_snapshot_sync()
+                card = self.build_control_card(snapshot, view_mode="config")
+                self.send_reply_card(message_id, card)
             return True
 
         elif subcmd in ["off", "stop"]:
@@ -201,6 +288,8 @@ class RpiGpioApiStatusPlugin(BasePlugin):
             help_text = (
                 "🍓 **树莓派 LED 状态指示控制指令 (API 网关版)**：\n\n"
                 "• `/led` 或 `/light`：弹出交互式控制面板卡片\n"
+                "• `/led test`：测试当前网关连通性与网络延迟\n"
+                "• `/led config <url> [token]`：快速修改网关 URL 与 Token\n"
                 "• `/led thinking`：思考中 (黄灯常亮)\n"
                 "• `/led breathing`：任务执行中 (正弦呼吸黄灯)\n"
                 "• `/led success`：成功完成 (常亮绿灯 300s)\n"
@@ -217,13 +306,38 @@ class RpiGpioApiStatusPlugin(BasePlugin):
     async def on_card_action(self, action: str, value: dict, chat_id: str, card_message_id: str) -> bool:
         if not getattr(self, "enabled", True):
             return False
-        if action == "set_led_state":
+
+        if action == "test_gateway_connection":
+            test_res = self.test_gateway_connection()
+            snapshot = self._fetch_snapshot_sync()
+            card = self.build_control_card(snapshot, view_mode="control", test_banner=test_res)
+            patch_interactive_card_sdk(card_message_id, card)
+            return True
+
+        elif action == "switch_led_view":
+            target_view = value.get("view", "control")
+            snapshot = self._fetch_snapshot_sync()
+            card = self.build_control_card(snapshot, view_mode=target_view)
+            patch_interactive_card_sdk(card_message_id, card)
+            return True
+
+        elif action == "apply_quick_gateway":
+            preset_url = value.get("url", DEFAULT_API_URL)
+            preset_token = value.get("token", self.api_token)
+            self.save_config_file({"api_url": preset_url, "api_token": preset_token})
+            test_res = self.test_gateway_connection()
+            snapshot = self._fetch_snapshot_sync()
+            card = self.build_control_card(snapshot, view_mode="control", test_banner=test_res)
+            patch_interactive_card_sdk(card_message_id, card)
+            return True
+
+        elif action == "set_led_state":
             target_state = value.get("state", "off")
             dur = int(value.get("duration", 300))
             self._call_api_async("/api/state", "POST", {"state": target_state, "duration": dur})
             time.sleep(0.3)
             new_snapshot = self._fetch_snapshot_sync()
-            card = self.build_control_card(new_snapshot)
+            card = self.build_control_card(new_snapshot, view_mode="control")
             patch_interactive_card_sdk(card_message_id, card)
             return True
 
@@ -232,7 +346,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
             self._call_api_async("/api/pattern", "POST", {"name": pat_name, "repeat": 5})
             time.sleep(0.3)
             new_snapshot = self._fetch_snapshot_sync()
-            card = self.build_control_card(new_snapshot)
+            card = self.build_control_card(new_snapshot, view_mode="control")
             patch_interactive_card_sdk(card_message_id, card)
             return True
 
@@ -242,7 +356,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
             self._call_api_async("/api/timer", "POST", {"color": color, "duration_sec": secs, "fade_out_sec": 5})
             time.sleep(0.3)
             new_snapshot = self._fetch_snapshot_sync()
-            card = self.build_control_card(new_snapshot)
+            card = self.build_control_card(new_snapshot, view_mode="control")
             patch_interactive_card_sdk(card_message_id, card)
             return True
 
@@ -250,20 +364,20 @@ class RpiGpioApiStatusPlugin(BasePlugin):
             self.turn_all_off()
             time.sleep(0.3)
             new_snapshot = self._fetch_snapshot_sync()
-            card = self.build_control_card(new_snapshot)
+            card = self.build_control_card(new_snapshot, view_mode="control")
             patch_interactive_card_sdk(card_message_id, card)
             return True
 
         elif action == "refresh_led_card":
             new_snapshot = self._fetch_snapshot_sync()
-            card = self.build_control_card(new_snapshot)
+            card = self.build_control_card(new_snapshot, view_mode="control")
             patch_interactive_card_sdk(card_message_id, card)
             return True
 
         return False
 
     # ==================== 构建飞书交互式卡片 ====================
-    def build_control_card(self, snapshot: Optional[dict] = None) -> dict:
+    def build_control_card(self, snapshot: Optional[dict] = None, view_mode: str = "control", test_banner: Optional[dict] = None) -> dict:
         raw_state = "unknown"
         mode_str = "HTTP 网关连接"
         timer_info = "未激活"
@@ -297,107 +411,198 @@ class RpiGpioApiStatusPlugin(BasePlugin):
 
         display_name, header_color = state_map.get(raw_state, (f"💡 运行中 ({raw_state})", "blue"))
 
-        elements = [
-            {
-                "tag": "markdown",
-                "content": (
-                    f"**💡 当前硬件状态**：**{display_name}**\n\n"
-                    f"• **网关地址**：`{self.api_url}`\n"
-                    f"• **硬件引脚**：`{pins_info}`\n"
-                    f"• **驱动模式**：`{mode_str}`\n"
-                    f"• **智能倒计时**：`{timer_info}`"
-                )
-            },
-            {"tag": "hr"},
-            {
-                "tag": "markdown",
-                "content": "**🎯 快速切换系统预设**"
-            },
-            {
-                "tag": "action",
-                "layout": "flow",
-                "actions": [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🟡 思考中"},
-                        "type": "default",
-                        "value": {"action": "set_led_state", "state": "thinking", "duration": 300}
-                    },
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "✨ 正弦呼吸"},
-                        "type": "primary",
-                        "value": {"action": "set_led_state", "state": "breathing"}
-                    },
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🟢 成功完成"},
-                        "type": "primary",
-                        "value": {"action": "set_led_state", "state": "success", "duration": self.success_duration}
-                    },
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🔴 异常报错"},
-                        "type": "danger",
-                        "value": {"action": "set_led_state", "state": "error"}
-                    }
-                ]
-            },
-            {
-                "tag": "markdown",
-                "content": "**🎭 动效与智能倒计时**"
-            },
-            {
-                "tag": "action",
-                "layout": "flow",
-                "actions": [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🚨 警报动效"},
-                        "type": "danger",
-                        "value": {"action": "play_led_pattern", "pattern": "police_alert"}
-                    },
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🌈 流水动效"},
-                        "type": "default",
-                        "value": {"action": "play_led_pattern", "pattern": "rainbow_flow"}
-                    },
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "⏱️ 番茄钟 25m"},
-                        "type": "primary",
-                        "value": {"action": "start_led_timer", "color": "green", "duration_sec": 1500}
-                    },
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "⏹️ 熄灭全灯"},
-                        "type": "default",
-                        "value": {"action": "turn_off_all"}
-                    }
-                ]
-            },
-            {"tag": "hr"},
-            {
-                "tag": "action",
-                "layout": "flow",
-                "actions": [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🔄 刷新实时状态"},
-                        "type": "default",
-                        "value": {"action": "refresh_led_card"}
-                    }
-                ]
-            }
-        ]
+        masked_token = f"{self.api_token[:3]}****{self.api_token[-3:]}" if len(self.api_token) > 6 else "***"
+        elements = []
+
+        # 1. Test Banner (If triggered)
+        if test_banner or self.last_test_result:
+            tb = test_banner or self.last_test_result
+            if tb.get("success"):
+                elements.append({
+                    "tag": "markdown",
+                    "content": f"✅ **连通性测试通过** (`{tb.get('timestamp')}`)\n• **目标 URL**：`{tb.get('url')}`\n• **响应耗时**：**`{tb.get('latency_ms')} ms`** | 驱动：`{tb.get('driver_mode')}`"
+                })
+            else:
+                elements.append({
+                    "tag": "markdown",
+                    "content": f"❌ **连通性测试失败** (`{tb.get('timestamp')}`)\n• **目标 URL**：`{tb.get('url')}`\n• **错误原因**：`{tb.get('error')}`"
+                })
+            elements.append({"tag": "hr"})
+
+        if view_mode == "config":
+            # ==================== 配置视图 ====================
+            elements.extend([
+                {
+                    "tag": "markdown",
+                    "content": (
+                        "**⚙️ pi_led_api 网关参数配置**\n\n"
+                        f"• **当前网关地址**：`{self.api_url}`\n"
+                        f"• **当前 API Token**：`{masked_token}`\n"
+                        f"• **自动联动状态**：`{'开启' if self.auto_indicator else '关闭'}`\n\n"
+                        "💡 **快速切换常用网关预设**："
+                    )
+                },
+                {
+                    "tag": "action",
+                    "layout": "flow",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "🏠 本地网关 (127.0.0.1:8080)"},
+                            "type": "default",
+                            "value": {"action": "apply_quick_gateway", "url": "http://127.0.0.1:8080", "token": self.api_token}
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "🌐 生产域名 (piled.abab.pw)"},
+                            "type": "primary",
+                            "value": {"action": "apply_quick_gateway", "url": "https://piled.abab.pw", "token": self.api_token}
+                        }
+                    ]
+                },
+                {"tag": "hr"},
+                {
+                    "tag": "markdown",
+                    "content": "**📝 自定义配置指令格式**：\n发送指令 `/led config <网关URL> <Token>`\n*例如*：`/led config http://127.0.0.1:8080 ipad_pro_secret_888`"
+                },
+                {
+                    "tag": "action",
+                    "layout": "flow",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "🔌 测试当前连接"},
+                            "type": "primary",
+                            "value": {"action": "test_gateway_connection"}
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "🔙 返回控制台"},
+                            "type": "default",
+                            "value": {"action": "switch_led_view", "view": "control"}
+                        }
+                    ]
+                }
+            ])
+            header_title = "⚙️ pi_led_api 网关参数配置"
+            header_color = "blue"
+
+        else:
+            # ==================== 控制台视图 ====================
+            elements.extend([
+                {
+                    "tag": "markdown",
+                    "content": (
+                        f"**💡 当前硬件状态**：**{display_name}**\n\n"
+                        f"• **网关服务**：`{self.api_url}` (Token: `{masked_token}`)\n"
+                        f"• **硬件引脚**：`{pins_info}`\n"
+                        f"• **驱动模式**：`{mode_str}`\n"
+                        f"• **智能倒计时**：`{timer_info}`"
+                    )
+                },
+                {"tag": "hr"},
+                {
+                    "tag": "markdown",
+                    "content": "**🎯 快速切换系统预设**"
+                },
+                {
+                    "tag": "action",
+                    "layout": "flow",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "🟡 思考中"},
+                            "type": "default",
+                            "value": {"action": "set_led_state", "state": "thinking", "duration": 300}
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "✨ 正弦呼吸"},
+                            "type": "primary",
+                            "value": {"action": "set_led_state", "state": "breathing"}
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "🟢 成功完成"},
+                            "type": "primary",
+                            "value": {"action": "set_led_state", "state": "success", "duration": self.success_duration}
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "🔴 异常报错"},
+                            "type": "danger",
+                            "value": {"action": "set_led_state", "state": "error"}
+                        }
+                    ]
+                },
+                {
+                    "tag": "markdown",
+                    "content": "**🎭 动效与智能倒计时**"
+                },
+                {
+                    "tag": "action",
+                    "layout": "flow",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "🚨 警报动效"},
+                            "type": "danger",
+                            "value": {"action": "play_led_pattern", "pattern": "police_alert"}
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "🌈 流水动效"},
+                            "type": "default",
+                            "value": {"action": "play_led_pattern", "pattern": "rainbow_flow"}
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "⏱️ 番茄钟 25m"},
+                            "type": "primary",
+                            "value": {"action": "start_led_timer", "color": "green", "duration_sec": 1500}
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "⏹️ 熄灭全灯"},
+                            "type": "default",
+                            "value": {"action": "turn_off_all"}
+                        }
+                    ]
+                },
+                {"tag": "hr"},
+                {
+                    "tag": "action",
+                    "layout": "flow",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "🔌 测试连通性"},
+                            "type": "primary",
+                            "value": {"action": "test_gateway_connection"}
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "⚙️ 配置 URL/Token"},
+                            "type": "default",
+                            "value": {"action": "switch_led_view", "view": "config"}
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "🔄 刷新状态"},
+                            "type": "default",
+                            "value": {"action": "refresh_led_card"}
+                        }
+                    ]
+                }
+            ])
+            header_title = "🍓 树莓派 LED 状态指示控制台 (API 版)"
 
         return {
             "config": {"wide_screen_mode": True},
             "header": {
                 "title": {
                     "tag": "plain_text",
-                    "content": "🍓 树莓派 LED 状态指示控制台 (API 版)"
+                    "content": header_title
                 },
                 "template": header_color
             },
