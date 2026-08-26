@@ -3,9 +3,9 @@
 for antigravity-feishu-bot.
 
 Features:
-- Connects to central pi_led_api gateway (http://127.0.0.1:8080 / https://piled.abab.pw)
-- Full Interactive Button Configuration Panel for Gateway URL, Tokens, and Settings
-- Live Gateway connectivity & latency test with interactive card feedback
+- Connects to central pi_led_api gateway via HTTP RESTful & WebSocket
+- Interactive conversational configuration: click button to input Gateway URL / Token
+- Real-time Gateway connectivity & RTT latency test
 - Full AI dialogue lifecycle indicators (Thinking, Breathing, Success, Error, Restart)
 - Interactive Feishu Action Cards with instant buttons and timers
 """
@@ -22,7 +22,7 @@ from logger import log
 from lark_client import patch_interactive_card_sdk, send_reply_sdk
 
 DEFAULT_API_URL = "http://127.0.0.1:8080"
-DEFAULT_API_TOKEN = os.getenv("API_TOKEN", "ipad_pro_secret_888")
+DEFAULT_API_TOKEN = os.getenv("API_TOKEN", "")
 
 class RpiGpioApiStatusPlugin(BasePlugin):
 
@@ -39,6 +39,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
         self.success_duration = int(self.config_data.get("success_duration_sec", 300))
         self.current_state = "off"
         self.last_test_result: Optional[dict] = None
+        self.pending_input: Dict[str, str] = {}  # chat_id -> "waiting_url" | "waiting_token"
 
         log.info(f"[Plugin:{self.plugin_id}] Initialized with central gateway at {self.api_url}")
         self.on_startup_complete()
@@ -176,9 +177,40 @@ class RpiGpioApiStatusPlugin(BasePlugin):
         self.current_state = "restarting_yellow_blink"
         self._call_api_async("/api/state", "POST", {"state": "restarting"})
 
-    # ==================== AI 对话生命周期拦截 ====================
+    # ==================== AI 对话生命周期拦截与交互式输入捕获 ====================
     async def on_before_ai(self, user_text: str, chat_id: str, session_data: dict) -> tuple[str, dict]:
         if not getattr(self, "enabled", True): return user_text, session_data
+
+        # 检查是否处于等待用户输入配置的状态
+        pending_mode = self.pending_input.get(chat_id)
+        if pending_mode:
+            text_val = user_text.strip()
+            if text_val.lower() in ["取消", "cancel", "退出", "q"]:
+                self.pending_input.pop(chat_id, None)
+                snapshot = self._fetch_snapshot_sync()
+                card = self.build_control_card(snapshot, view_mode="config", info_banner="⚪ 已取消配置输入。")
+                send_reply_sdk(chat_id, card)
+                return "", session_data
+
+            if pending_mode == "waiting_url":
+                self.pending_input.pop(chat_id, None)
+                self.save_config_file({"api_url": text_val})
+                test_res = self.test_gateway_connection()
+                snapshot = self._fetch_snapshot_sync()
+                card = self.build_control_card(snapshot, view_mode="config", test_banner=test_res, info_banner=f"✅ 网关 URL 已成功修改为 `{self.api_url}`")
+                send_reply_sdk(chat_id, card)
+                return "", session_data
+
+            elif pending_mode == "waiting_token":
+                self.pending_input.pop(chat_id, None)
+                new_tok = "" if text_val.lower() in ("0", "none", "null", "空", "清空", "无") else text_val
+                self.save_config_file({"api_token": new_tok})
+                test_res = self.test_gateway_connection()
+                snapshot = self._fetch_snapshot_sync()
+                card = self.build_control_card(snapshot, view_mode="config", test_banner=test_res, info_banner="✅ API Token 已成功更新！")
+                send_reply_sdk(chat_id, card)
+                return "", session_data
+
         self.set_state_thinking()
         return user_text, session_data
 
@@ -188,6 +220,8 @@ class RpiGpioApiStatusPlugin(BasePlugin):
 
     async def on_after_ai(self, ai_response_text: str, chat_id: str, session_data: dict) -> str:
         if not getattr(self, "enabled", True): return ai_response_text
+        if not ai_response_text: return ai_response_text
+
         is_err = session_data.get("last_execution_error", False)
         if not is_err:
             stripped = ai_response_text.strip()
@@ -289,7 +323,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
                 "🍓 **树莓派 LED 状态指示控制指令 (API 网关版)**：\n\n"
                 "• `/led` 或 `/light`：弹出交互式控制面板卡片\n"
                 "• `/led test`：测试当前网关连通性与网络延迟\n"
-                "• `/led config`：进入交互式按钮配置面板\n"
+                "• `/led config`：进入交互式网关与令牌配置面板\n"
                 "• `/led config <url> [token]`：快捷修改网关 URL 与 Token\n"
                 "• `/led thinking`：思考中 (黄灯常亮)\n"
                 "• `/led breathing`：任务执行中 (正弦呼吸黄灯)\n"
@@ -327,27 +361,34 @@ class RpiGpioApiStatusPlugin(BasePlugin):
             patch_interactive_card_sdk(card_message_id, card)
             return True
 
-        # 3. 交互式按钮：设置网关 URL
-        elif act == "set_gateway_url":
-            target_url = value.get("url", DEFAULT_API_URL)
-            self.save_config_file({"api_url": target_url})
-            test_res = self.test_gateway_connection()
+        # 3. 交互式按钮：触发输入网关 URL 提示
+        elif act == "prompt_input_url":
+            self.pending_input[chat_id] = "waiting_url"
             snapshot = self._fetch_snapshot_sync()
-            card = self.build_control_card(snapshot, view_mode="config", test_banner=test_res)
+            info = "💬 **请直接在聊天框中回复新的【LED 网关地址】**\n*(例如：`http://127.0.0.1:8080` 或 `https://your-domain.com`，回复「取消」可退出)*"
+            card = self.build_control_card(snapshot, view_mode="config", info_banner=info)
             patch_interactive_card_sdk(card_message_id, card)
             return True
 
-        # 4. 交互式按钮：设置网关 Token
-        elif act == "set_gateway_token":
-            target_token = value.get("token", "")
-            self.save_config_file({"api_token": target_token})
-            test_res = self.test_gateway_connection()
+        # 4. 交互式按钮：触发输入 API Token 提示
+        elif act == "prompt_input_token":
+            self.pending_input[chat_id] = "waiting_token"
             snapshot = self._fetch_snapshot_sync()
-            card = self.build_control_card(snapshot, view_mode="config", test_banner=test_res)
+            info = "💬 **请直接在聊天框中回复新的【API Token 密钥】**\n*(若免密请回复「空」或「0」，回复「取消」可退出)*"
+            card = self.build_control_card(snapshot, view_mode="config", info_banner=info)
             patch_interactive_card_sdk(card_message_id, card)
             return True
 
-        # 5. 交互式按钮：切换自动状态联动开关
+        # 5. 交互式按钮：一键重置为本地默认
+        elif act == "reset_default_local":
+            self.save_config_file({"api_url": DEFAULT_API_URL, "api_token": ""})
+            test_res = self.test_gateway_connection()
+            snapshot = self._fetch_snapshot_sync()
+            card = self.build_control_card(snapshot, view_mode="config", test_banner=test_res, info_banner=f"✅ 已重置为本地默认网关 `{DEFAULT_API_URL}`")
+            patch_interactive_card_sdk(card_message_id, card)
+            return True
+
+        # 6. 交互式按钮：切换自动状态联动开关
         elif act == "toggle_auto_indicator":
             new_auto = not self.auto_indicator
             self.save_config_file({"auto_indicator_enabled": new_auto})
@@ -356,7 +397,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
             patch_interactive_card_sdk(card_message_id, card)
             return True
 
-        # 6. 交互式按钮：设置成功保持秒数
+        # 7. 交互式按钮：设置成功保持秒数
         elif act == "set_success_duration":
             dur = int(value.get("duration", 300))
             self.save_config_file({"success_duration_sec": dur})
@@ -365,7 +406,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
             patch_interactive_card_sdk(card_message_id, card)
             return True
 
-        # 7. 控制面板：切换系统预设状态
+        # 8. 控制面板：切换系统预设状态
         elif act == "set_led_state":
             target_state = value.get("state", "off")
             dur = int(value.get("duration", 300))
@@ -376,7 +417,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
             patch_interactive_card_sdk(card_message_id, card)
             return True
 
-        # 8. 控制面板：播放动效
+        # 9. 控制面板：播放动效
         elif act == "play_led_pattern":
             pat_name = value.get("pattern", "police_alert")
             self._call_api_async("/api/pattern", "POST", {"name": pat_name, "repeat": 5})
@@ -386,7 +427,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
             patch_interactive_card_sdk(card_message_id, card)
             return True
 
-        # 9. 控制面板：启动智能倒计时
+        # 10. 控制面板：启动智能倒计时
         elif act == "start_led_timer":
             color = value.get("color", "green")
             secs = int(value.get("duration_sec", 60))
@@ -397,7 +438,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
             patch_interactive_card_sdk(card_message_id, card)
             return True
 
-        # 10. 控制面板：一键熄灭
+        # 11. 控制面板：一键熄灭
         elif act == "turn_off_all":
             self.turn_all_off()
             time.sleep(0.3)
@@ -406,7 +447,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
             patch_interactive_card_sdk(card_message_id, card)
             return True
 
-        # 11. 控制面板：刷新卡片
+        # 12. 控制面板：刷新卡片
         elif act == "refresh_led_card":
             new_snapshot = self._fetch_snapshot_sync()
             card = self.build_control_card(new_snapshot, view_mode="control")
@@ -416,7 +457,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
         return False
 
     # ==================== 构建飞书交互式卡片 ====================
-    def build_control_card(self, snapshot: Optional[dict] = None, view_mode: str = "control", test_banner: Optional[dict] = None) -> dict:
+    def build_control_card(self, snapshot: Optional[dict] = None, view_mode: str = "control", test_banner: Optional[dict] = None, info_banner: Optional[str] = None) -> dict:
         raw_state = "unknown"
         mode_str = "HTTP 网关连接"
         timer_info = "未激活"
@@ -450,10 +491,18 @@ class RpiGpioApiStatusPlugin(BasePlugin):
 
         display_name, header_color = state_map.get(raw_state, (f"💡 运行中 ({raw_state})", "blue"))
 
-        masked_token = f"{self.api_token[:3]}****{self.api_token[-3:]}" if len(self.api_token) > 6 else (self.api_token or "无 (未设置)")
+        masked_token = f"{self.api_token[:3]}****{self.api_token[-3:]}" if len(self.api_token) > 6 else (self.api_token or "无 (免密模式)")
         elements = []
 
-        # 1. Test Result Banner (If present)
+        # 1. Info / Prompt Banner (If active)
+        if info_banner:
+            elements.append({
+                "tag": "markdown",
+                "content": info_banner
+            })
+            elements.append({"tag": "hr"})
+
+        # 2. Test Result Banner (If active)
         if test_banner or self.last_test_result:
             tb = test_banner or self.last_test_result
             if tb.get("success"):
@@ -470,29 +519,21 @@ class RpiGpioApiStatusPlugin(BasePlugin):
 
         if view_mode == "config":
             # ==================== 交互式按钮配置面板 ====================
-            is_local = "127.0.0.1" in self.api_url or "localhost" in self.api_url
-            is_prod = "piled.abab.pw" in self.api_url
-            is_test_server = "43.155.173.146" in self.api_url
-
-            is_ipad_tok = self.api_token == "ipad_pro_secret_888"
-            is_bot_tok = self.api_token == "default_feishu_bot_token"
-            is_empty_tok = not self.api_token
-
             elements.extend([
                 {
                     "tag": "markdown",
                     "content": (
-                        "**⚙️ pi_led_api 网关参数交互式配置面板**\n\n"
+                        "**⚙️ pi_led_api 网关参数配置中心**\n\n"
                         f"• **当前网关地址**：`{self.api_url}`\n"
                         f"• **当前 API Token**：`{masked_token}`\n"
-                        f"• **自动联动状态**：`{'🟢 开启' if self.auto_indicator else '⚪ 已关闭'}`\n"
+                        f"• **自动联动状态**：`{'🟢 开启中' if self.auto_indicator else '⚪ 已停用'}`\n"
                         f"• **成功常亮时长**：`{self.success_duration} 秒`"
                     )
                 },
                 {"tag": "hr"},
                 {
                     "tag": "markdown",
-                    "content": "**🌐 1. 点击按钮切换网关 URL：**"
+                    "content": "**🎛️ 1. 点击按钮修改网关与 Token：**"
                 },
                 {
                     "tag": "action",
@@ -500,55 +541,27 @@ class RpiGpioApiStatusPlugin(BasePlugin):
                     "actions": [
                         {
                             "tag": "button",
-                            "text": {"tag": "plain_text", "content": f"{'✓ ' if is_local else ''}🏠 本地 (127.0.0.1:8080)"},
-                            "type": "primary" if is_local else "default",
-                            "value": {"action": "set_gateway_url", "url": "http://127.0.0.1:8080"}
+                            "text": {"tag": "plain_text", "content": "🌐 修改网关 URL"},
+                            "type": "primary",
+                            "value": {"action": "prompt_input_url"}
                         },
                         {
                             "tag": "button",
-                            "text": {"tag": "plain_text", "content": f"{'✓ ' if is_prod else ''}🌐 生产域名 (piled.abab.pw)"},
-                            "type": "primary" if is_prod else "default",
-                            "value": {"action": "set_gateway_url", "url": "https://piled.abab.pw"}
+                            "text": {"tag": "plain_text", "content": "🔑 修改 API Token"},
+                            "type": "primary",
+                            "value": {"action": "prompt_input_token"}
                         },
                         {
                             "tag": "button",
-                            "text": {"tag": "plain_text", "content": f"{'✓ ' if is_test_server else ''}☁️ 测试服 (43.155:8080)"},
-                            "type": "primary" if is_test_server else "default",
-                            "value": {"action": "set_gateway_url", "url": "http://43.155.173.146:8080"}
+                            "text": {"tag": "plain_text", "content": "🏠 重置为本地 127.0.0.1"},
+                            "type": "default",
+                            "value": {"action": "reset_default_local"}
                         }
                     ]
                 },
                 {
                     "tag": "markdown",
-                    "content": "**🔑 2. 点击按钮切换预设 API Token：**"
-                },
-                {
-                    "tag": "action",
-                    "layout": "flow",
-                    "actions": [
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": f"{'✓ ' if is_ipad_tok else ''}📱 iPad Pro Token"},
-                            "type": "primary" if is_ipad_tok else "default",
-                            "value": {"action": "set_gateway_token", "token": "ipad_pro_secret_888"}
-                        },
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": f"{'✓ ' if is_bot_tok else ''}🤖 Bot 默认 Token"},
-                            "type": "primary" if is_bot_tok else "default",
-                            "value": {"action": "set_gateway_token", "token": "default_feishu_bot_token"}
-                        },
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": f"{'✓ ' if is_empty_tok else ''}🚫 清空 Token (免密)"},
-                            "type": "danger" if is_empty_tok else "default",
-                            "value": {"action": "set_gateway_token", "token": ""}
-                        }
-                    ]
-                },
-                {
-                    "tag": "markdown",
-                    "content": "**⏱️ 3. 成功常亮保持时长与自动联动：**"
+                    "content": "**⏱️ 2. 联动与保持时长快速调节：**"
                 },
                 {
                     "tag": "action",
@@ -600,7 +613,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
                     ]
                 }
             ])
-            header_title = "⚙️ 树莓派 LED 网关参数配置 (交互式按钮)"
+            header_title = "⚙️ 树莓派 LED 网关参数配置中心"
             header_color = "blue"
 
         else:
