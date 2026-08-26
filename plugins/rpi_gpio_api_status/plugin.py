@@ -23,6 +23,11 @@ class RpiGpioApiStatusPlugin(BasePlugin):
 
     def initialize(self):
         cfg = self.get_config() or {}
+        self.enabled = cfg.get("enabled", True)
+        if not self.enabled:
+            log.info(f"[Plugin:{self.plugin_id}] Disabled via config.json.")
+            return
+
         self.api_url = cfg.get("api_url", DEFAULT_API_URL).rstrip("/")
         self.api_token = cfg.get("api_token", DEFAULT_API_TOKEN)
         self.auto_indicator = cfg.get("auto_indicator_enabled", True)
@@ -98,18 +103,26 @@ class RpiGpioApiStatusPlugin(BasePlugin):
         self._call_api_async("/api/off", "POST")
 
     def on_service_restarting(self):
+        if not getattr(self, "enabled", True):
+            return
         self.current_state = "restarting_yellow_blink"
         self._call_api_async("/api/state", "POST", {"state": "restarting"})
 
     # ==================== AI 对话生命周期拦截 ====================
     async def on_before_ai(self, user_text: str, chat_id: str, session_data: dict) -> tuple[str, dict]:
+        if not getattr(self, "enabled", True):
+            return user_text, session_data
         self.set_state_thinking()
         return user_text, session_data
 
     async def on_tool_call(self, tool_name: str, tool_args: dict):
+        if not getattr(self, "enabled", True):
+            return
         self.set_state_breathing_yellow()
 
     async def on_after_ai(self, ai_response_text: str, chat_id: str, session_data: dict) -> str:
+        if not getattr(self, "enabled", True):
+            return ai_response_text
         is_err = session_data.get("last_execution_error", False)
         if not is_err:
             stripped = ai_response_text.strip()
@@ -124,6 +137,8 @@ class RpiGpioApiStatusPlugin(BasePlugin):
 
     # ==================== 飞书命令处理 (/led, /light) ====================
     async def on_command(self, command: str, args: str, chat_id: str, message_id: str, session_data: dict) -> bool:
+        if not getattr(self, "enabled", True):
+            return False
         if command.lower() not in ["/led", "/light"]:
             return False
 
@@ -200,6 +215,8 @@ class RpiGpioApiStatusPlugin(BasePlugin):
 
     # ==================== 飞书交互式卡片事件响应 ====================
     async def on_card_action(self, action: str, value: dict, chat_id: str, card_message_id: str) -> bool:
+        if not getattr(self, "enabled", True):
+            return False
         if action == "set_led_state":
             target_state = value.get("state", "off")
             dur = int(value.get("duration", 300))
