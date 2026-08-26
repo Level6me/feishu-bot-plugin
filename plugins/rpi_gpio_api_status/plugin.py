@@ -4,7 +4,7 @@ for antigravity-feishu-bot.
 
 Features:
 - Connects to central pi_led_api gateway (http://127.0.0.1:8080 / https://piled.abab.pw)
-- Dynamic Gateway URL and Token configuration with persistence (config.json)
+- Full Interactive Button Configuration Panel for Gateway URL, Tokens, and Settings
 - Live Gateway connectivity & latency test with interactive card feedback
 - Full AI dialogue lifecycle indicators (Thinking, Breathing, Success, Error, Restart)
 - Interactive Feishu Action Cards with instant buttons and timers
@@ -230,7 +230,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
                 self.save_config_file({"api_url": new_url, "api_token": new_token})
                 res = self.test_gateway_connection()
                 snapshot = self._fetch_snapshot_sync()
-                card = self.build_control_card(snapshot, view_mode="control", test_banner=res)
+                card = self.build_control_card(snapshot, view_mode="config", test_banner=res)
                 self.send_reply_card(message_id, card)
             else:
                 snapshot = self._fetch_snapshot_sync()
@@ -289,7 +289,8 @@ class RpiGpioApiStatusPlugin(BasePlugin):
                 "🍓 **树莓派 LED 状态指示控制指令 (API 网关版)**：\n\n"
                 "• `/led` 或 `/light`：弹出交互式控制面板卡片\n"
                 "• `/led test`：测试当前网关连通性与网络延迟\n"
-                "• `/led config <url> [token]`：快速修改网关 URL 与 Token\n"
+                "• `/led config`：进入交互式按钮配置面板\n"
+                "• `/led config <url> [token]`：快捷修改网关 URL 与 Token\n"
                 "• `/led thinking`：思考中 (黄灯常亮)\n"
                 "• `/led breathing`：任务执行中 (正弦呼吸黄灯)\n"
                 "• `/led success`：成功完成 (常亮绿灯 300s)\n"
@@ -307,31 +308,65 @@ class RpiGpioApiStatusPlugin(BasePlugin):
         if not getattr(self, "enabled", True):
             return False
 
-        if action == "test_gateway_connection":
+        act = action or (value.get("action") if isinstance(value, dict) else "")
+
+        # 1. 连通性测试
+        if act == "test_gateway_connection":
             test_res = self.test_gateway_connection()
             snapshot = self._fetch_snapshot_sync()
-            card = self.build_control_card(snapshot, view_mode="control", test_banner=test_res)
+            current_view = value.get("view", "control")
+            card = self.build_control_card(snapshot, view_mode=current_view, test_banner=test_res)
             patch_interactive_card_sdk(card_message_id, card)
             return True
 
-        elif action == "switch_led_view":
+        # 2. 视图切换
+        elif act == "switch_led_view":
             target_view = value.get("view", "control")
             snapshot = self._fetch_snapshot_sync()
             card = self.build_control_card(snapshot, view_mode=target_view)
             patch_interactive_card_sdk(card_message_id, card)
             return True
 
-        elif action == "apply_quick_gateway":
-            preset_url = value.get("url", DEFAULT_API_URL)
-            preset_token = value.get("token", self.api_token)
-            self.save_config_file({"api_url": preset_url, "api_token": preset_token})
+        # 3. 交互式按钮：设置网关 URL
+        elif act == "set_gateway_url":
+            target_url = value.get("url", DEFAULT_API_URL)
+            self.save_config_file({"api_url": target_url})
             test_res = self.test_gateway_connection()
             snapshot = self._fetch_snapshot_sync()
-            card = self.build_control_card(snapshot, view_mode="control", test_banner=test_res)
+            card = self.build_control_card(snapshot, view_mode="config", test_banner=test_res)
             patch_interactive_card_sdk(card_message_id, card)
             return True
 
-        elif action == "set_led_state":
+        # 4. 交互式按钮：设置网关 Token
+        elif act == "set_gateway_token":
+            target_token = value.get("token", "")
+            self.save_config_file({"api_token": target_token})
+            test_res = self.test_gateway_connection()
+            snapshot = self._fetch_snapshot_sync()
+            card = self.build_control_card(snapshot, view_mode="config", test_banner=test_res)
+            patch_interactive_card_sdk(card_message_id, card)
+            return True
+
+        # 5. 交互式按钮：切换自动状态联动开关
+        elif act == "toggle_auto_indicator":
+            new_auto = not self.auto_indicator
+            self.save_config_file({"auto_indicator_enabled": new_auto})
+            snapshot = self._fetch_snapshot_sync()
+            card = self.build_control_card(snapshot, view_mode="config")
+            patch_interactive_card_sdk(card_message_id, card)
+            return True
+
+        # 6. 交互式按钮：设置成功保持秒数
+        elif act == "set_success_duration":
+            dur = int(value.get("duration", 300))
+            self.save_config_file({"success_duration_sec": dur})
+            snapshot = self._fetch_snapshot_sync()
+            card = self.build_control_card(snapshot, view_mode="config")
+            patch_interactive_card_sdk(card_message_id, card)
+            return True
+
+        # 7. 控制面板：切换系统预设状态
+        elif act == "set_led_state":
             target_state = value.get("state", "off")
             dur = int(value.get("duration", 300))
             self._call_api_async("/api/state", "POST", {"state": target_state, "duration": dur})
@@ -341,7 +376,8 @@ class RpiGpioApiStatusPlugin(BasePlugin):
             patch_interactive_card_sdk(card_message_id, card)
             return True
 
-        elif action == "play_led_pattern":
+        # 8. 控制面板：播放动效
+        elif act == "play_led_pattern":
             pat_name = value.get("pattern", "police_alert")
             self._call_api_async("/api/pattern", "POST", {"name": pat_name, "repeat": 5})
             time.sleep(0.3)
@@ -350,7 +386,8 @@ class RpiGpioApiStatusPlugin(BasePlugin):
             patch_interactive_card_sdk(card_message_id, card)
             return True
 
-        elif action == "start_led_timer":
+        # 9. 控制面板：启动智能倒计时
+        elif act == "start_led_timer":
             color = value.get("color", "green")
             secs = int(value.get("duration_sec", 60))
             self._call_api_async("/api/timer", "POST", {"color": color, "duration_sec": secs, "fade_out_sec": 5})
@@ -360,7 +397,8 @@ class RpiGpioApiStatusPlugin(BasePlugin):
             patch_interactive_card_sdk(card_message_id, card)
             return True
 
-        elif action == "turn_off_all":
+        # 10. 控制面板：一键熄灭
+        elif act == "turn_off_all":
             self.turn_all_off()
             time.sleep(0.3)
             new_snapshot = self._fetch_snapshot_sync()
@@ -368,7 +406,8 @@ class RpiGpioApiStatusPlugin(BasePlugin):
             patch_interactive_card_sdk(card_message_id, card)
             return True
 
-        elif action == "refresh_led_card":
+        # 11. 控制面板：刷新卡片
+        elif act == "refresh_led_card":
             new_snapshot = self._fetch_snapshot_sync()
             card = self.build_control_card(new_snapshot, view_mode="control")
             patch_interactive_card_sdk(card_message_id, card)
@@ -411,10 +450,10 @@ class RpiGpioApiStatusPlugin(BasePlugin):
 
         display_name, header_color = state_map.get(raw_state, (f"💡 运行中 ({raw_state})", "blue"))
 
-        masked_token = f"{self.api_token[:3]}****{self.api_token[-3:]}" if len(self.api_token) > 6 else "***"
+        masked_token = f"{self.api_token[:3]}****{self.api_token[-3:]}" if len(self.api_token) > 6 else (self.api_token or "无 (未设置)")
         elements = []
 
-        # 1. Test Banner (If triggered)
+        # 1. Test Result Banner (If present)
         if test_banner or self.last_test_result:
             tb = test_banner or self.last_test_result
             if tb.get("success"):
@@ -430,17 +469,30 @@ class RpiGpioApiStatusPlugin(BasePlugin):
             elements.append({"tag": "hr"})
 
         if view_mode == "config":
-            # ==================== 配置视图 ====================
+            # ==================== 交互式按钮配置面板 ====================
+            is_local = "127.0.0.1" in self.api_url or "localhost" in self.api_url
+            is_prod = "piled.abab.pw" in self.api_url
+            is_test_server = "43.155.173.146" in self.api_url
+
+            is_ipad_tok = self.api_token == "ipad_pro_secret_888"
+            is_bot_tok = self.api_token == "default_feishu_bot_token"
+            is_empty_tok = not self.api_token
+
             elements.extend([
                 {
                     "tag": "markdown",
                     "content": (
-                        "**⚙️ pi_led_api 网关参数配置**\n\n"
+                        "**⚙️ pi_led_api 网关参数交互式配置面板**\n\n"
                         f"• **当前网关地址**：`{self.api_url}`\n"
                         f"• **当前 API Token**：`{masked_token}`\n"
-                        f"• **自动联动状态**：`{'开启' if self.auto_indicator else '关闭'}`\n\n"
-                        "💡 **快速切换常用网关预设**："
+                        f"• **自动联动状态**：`{'🟢 开启' if self.auto_indicator else '⚪ 已关闭'}`\n"
+                        f"• **成功常亮时长**：`{self.success_duration} 秒`"
                     )
+                },
+                {"tag": "hr"},
+                {
+                    "tag": "markdown",
+                    "content": "**🌐 1. 点击按钮切换网关 URL：**"
                 },
                 {
                     "tag": "action",
@@ -448,43 +500,107 @@ class RpiGpioApiStatusPlugin(BasePlugin):
                     "actions": [
                         {
                             "tag": "button",
-                            "text": {"tag": "plain_text", "content": "🏠 本地网关 (127.0.0.1:8080)"},
-                            "type": "default",
-                            "value": {"action": "apply_quick_gateway", "url": "http://127.0.0.1:8080", "token": self.api_token}
+                            "text": {"tag": "plain_text", "content": f"{'✓ ' if is_local else ''}🏠 本地 (127.0.0.1:8080)"},
+                            "type": "primary" if is_local else "default",
+                            "value": {"action": "set_gateway_url", "url": "http://127.0.0.1:8080"}
                         },
                         {
                             "tag": "button",
-                            "text": {"tag": "plain_text", "content": "🌐 生产域名 (piled.abab.pw)"},
-                            "type": "primary",
-                            "value": {"action": "apply_quick_gateway", "url": "https://piled.abab.pw", "token": self.api_token}
+                            "text": {"tag": "plain_text", "content": f"{'✓ ' if is_prod else ''}🌐 生产域名 (piled.abab.pw)"},
+                            "type": "primary" if is_prod else "default",
+                            "value": {"action": "set_gateway_url", "url": "https://piled.abab.pw"}
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": f"{'✓ ' if is_test_server else ''}☁️ 测试服 (43.155:8080)"},
+                            "type": "primary" if is_test_server else "default",
+                            "value": {"action": "set_gateway_url", "url": "http://43.155.173.146:8080"}
+                        }
+                    ]
+                },
+                {
+                    "tag": "markdown",
+                    "content": "**🔑 2. 点击按钮切换预设 API Token：**"
+                },
+                {
+                    "tag": "action",
+                    "layout": "flow",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": f"{'✓ ' if is_ipad_tok else ''}📱 iPad Pro Token"},
+                            "type": "primary" if is_ipad_tok else "default",
+                            "value": {"action": "set_gateway_token", "token": "ipad_pro_secret_888"}
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": f"{'✓ ' if is_bot_tok else ''}🤖 Bot 默认 Token"},
+                            "type": "primary" if is_bot_tok else "default",
+                            "value": {"action": "set_gateway_token", "token": "default_feishu_bot_token"}
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": f"{'✓ ' if is_empty_tok else ''}🚫 清空 Token (免密)"},
+                            "type": "danger" if is_empty_tok else "default",
+                            "value": {"action": "set_gateway_token", "token": ""}
+                        }
+                    ]
+                },
+                {
+                    "tag": "markdown",
+                    "content": "**⏱️ 3. 成功常亮保持时长与自动联动：**"
+                },
+                {
+                    "tag": "action",
+                    "layout": "flow",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": f"联动: {'🟢 开启中' if self.auto_indicator else '⚪ 已停用'}"},
+                            "type": "primary" if self.auto_indicator else "default",
+                            "value": {"action": "toggle_auto_indicator"}
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": f"{'✓ ' if self.success_duration == 60 else ''}60 秒"},
+                            "type": "primary" if self.success_duration == 60 else "default",
+                            "value": {"action": "set_success_duration", "duration": 60}
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": f"{'✓ ' if self.success_duration == 300 else ''}300 秒"},
+                            "type": "primary" if self.success_duration == 300 else "default",
+                            "value": {"action": "set_success_duration", "duration": 300}
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": f"{'✓ ' if self.success_duration == 600 else ''}600 秒"},
+                            "type": "primary" if self.success_duration == 600 else "default",
+                            "value": {"action": "set_success_duration", "duration": 600}
                         }
                     ]
                 },
                 {"tag": "hr"},
                 {
-                    "tag": "markdown",
-                    "content": "**📝 自定义配置指令格式**：\n发送指令 `/led config <网关URL> <Token>`\n*例如*：`/led config http://127.0.0.1:8080 ipad_pro_secret_888`"
-                },
-                {
                     "tag": "action",
                     "layout": "flow",
                     "actions": [
                         {
                             "tag": "button",
-                            "text": {"tag": "plain_text", "content": "🔌 测试当前连接"},
+                            "text": {"tag": "plain_text", "content": "🔌 测试当前配置连通性"},
                             "type": "primary",
-                            "value": {"action": "test_gateway_connection"}
+                            "value": {"action": "test_gateway_connection", "view": "config"}
                         },
                         {
                             "tag": "button",
-                            "text": {"tag": "plain_text", "content": "🔙 返回控制台"},
+                            "text": {"tag": "plain_text", "content": "🔙 返回控制面板"},
                             "type": "default",
                             "value": {"action": "switch_led_view", "view": "control"}
                         }
                     ]
                 }
             ])
-            header_title = "⚙️ pi_led_api 网关参数配置"
+            header_title = "⚙️ 树莓派 LED 网关参数配置 (交互式按钮)"
             header_color = "blue"
 
         else:
@@ -578,11 +694,11 @@ class RpiGpioApiStatusPlugin(BasePlugin):
                             "tag": "button",
                             "text": {"tag": "plain_text", "content": "🔌 测试连通性"},
                             "type": "primary",
-                            "value": {"action": "test_gateway_connection"}
+                            "value": {"action": "test_gateway_connection", "view": "control"}
                         },
                         {
                             "tag": "button",
-                            "text": {"tag": "plain_text", "content": "⚙️ 配置 URL/Token"},
+                            "text": {"tag": "plain_text", "content": "⚙️ 交互式配置"},
                             "type": "default",
                             "value": {"action": "switch_led_view", "view": "config"}
                         },
