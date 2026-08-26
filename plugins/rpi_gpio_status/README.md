@@ -1,47 +1,28 @@
-# 🍓 树莓派 GPIO 状态灯指示插件 (API 网关版 v2.0)
+# 🍓 树莓派 GPIO 状态灯指示插件 (rpi_gpio_status)
 
-基于 [pi_led_api](https://github.com/Level6me/pi_led_api) 集中式 HTTP 网关控制树莓派红绿黄三色 LED 指示灯，与飞书 Bot 全生命周期无缝联动，并提供完整的飞书交互式控制面板。
+根据用户定制精准规则，通过树莓派 40Pin 物理 GPIO 引脚控制红绿黄三色 LED 灯。
 
----
+## 🎯 核心逻辑与规则
 
-## 🎯 核心联动规则
+1. **黄灯 / 绿灯 (思考/工具/启动)**：
+   - **开始思考时**：常亮黄灯
+   - **使用工具时**：亮呼吸黄灯
+   - **feishu-bot 重启服务/启动中**：闪烁黄灯
+   - **feishu-bot 启动完成时**：闪烁绿灯 5 次，然后全灭
 
-1. **🟡 黄灯 (思考中 / 工具调用 / 重启)**：
-   - **Bot 开始思考时**：常亮黄灯 (`thinking`)
-   - **Bot 正在调用工具执行任务时**：正弦平滑呼吸黄灯 (`breathing`)
-   - **Bot 正在热重启中**：闪烁黄灯 (`restarting`)
-2. **🟢 绿灯 (任务完成 / 启动自检)**：
-   - **Bot 启动自检完成**：绿灯连闪 5 次 (`startup`)
-   - **Bot 任务成功完成**：常亮绿灯 300 秒，随后自动熄灭 (`success`)
-3. **🔴 红灯 (异常报错 / 强制停止)**：
-   - **执行出现异常报错或被 `/stop` 强停**：常亮红灯 (`error`)
+2. **红灯 (异常/强停)**：
+   - **出现错误 / 被 `/stop` 强制停止时**：常亮红灯
 
----
+3. **绿灯 (成功完成)**：
+   - **任务执行完成时**：亮绿灯 300 秒，随后自动灭掉
 
-## 💬 飞书交互指令
+## 📌 GPIO 引脚映射 (BCM 编码)
 
-| 指令 | 说明 |
-| :--- | :--- |
-| `/led` 或 `/light` | 弹出飞书交互式控制面板卡片（支持点击按钮即时控制） |
-| `/led thinking` | 切换为【思考中】(常亮黄灯) |
-| `/led breathing` | 切换为【任务执行中】(正弦呼吸黄灯) |
-| `/led success` | 切换为【任务完成】(常亮绿灯 300s) |
-| `/led error` | 切换为【系统异常】(常亮红灯) |
-| `/led startup` | 触发【开机自检】(绿灯连闪 5 次) |
-| `/led timer <color> <sec>` | 启动指定通道倒计时（结束前自动平滑渐暗熄灭） |
-| `/led pattern <name>` | 播放动效序列 (`police_alert`, `rainbow_flow`, `pulse_heartbeat` 等) |
-| `/led off` | 熄灭所有通道 |
+- 🔴 **红灯 (Error / /stop)**：GPIO 22
+- 🟡 **黄灯 (Thinking / Tool)**：GPIO 27
+- 🟢 **绿灯 (Success / Startup)**：GPIO 17
 
----
+## 💬 调试指令
 
-## ⚙️ 配置文件说明 (`config.json`)
-
-```json
-{
-  "enabled": true,
-  "api_url": "http://127.0.0.1:8080",
-  "api_token": "ipad_pro_secret_888",
-  "auto_indicator_enabled": true,
-  "success_duration_sec": 300
-}
-```
+- `/light` 或 `/led`：获取飞书控制面板卡片
+- `/stop`：强制停止任务并置为常亮红灯

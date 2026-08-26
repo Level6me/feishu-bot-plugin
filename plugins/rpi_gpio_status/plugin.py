@@ -1,388 +1,360 @@
-"""
-🍓 Raspberry Pi GPIO LED Status Indicator Plugin (API Gateway Edition)
-for antigravity-feishu-bot.
+"""Raspberry Pi GPIO LED Status Indicator Plugin for antigravity-feishu-bot.
 
-Connects to the central pi_led_api service (https://github.com/Level6me/pi_led_api)
-via RESTful API & WebSocket for unified hardware control and interactive Feishu cards.
+Rules:
+1. 开始思考时常亮黄灯; 使用工具时亮呼吸黄灯; feishu-bot重启服务时闪烁黄灯; feishu-bot启动完成时闪烁绿灯5次然后灭掉
+2. 出现错误 / 被/stop强制停止 时常亮红灯
+3. 任务执行完成 亮绿灯300秒然后灭掉
 """
 
 import os
 import time
-import requests
+import asyncio
 import threading
-from typing import Optional, Dict, Any
-
 from plugin_base import BasePlugin
 from logger import log
-from lark_client import patch_interactive_card_sdk, send_reply_sdk
 
-DEFAULT_API_URL = "http://127.0.0.1:8080"
-DEFAULT_API_TOKEN = os.getenv("API_TOKEN", "ipad_pro_secret_888")
+# Multi-backend GPIO import (gpiozero with LGPIOFactory as primary)
+GPIO_AVAILABLE = False
+gpio_mode = "NONE"
+
+try:
+    from gpiozero import LED, PWMLED
+    from gpiozero.pins.lgpio import LGPIOFactory
+    import gpiozero
+    gpiozero.Device.pin_factory = LGPIOFactory()
+    GPIO_AVAILABLE = True
+    gpio_mode = "GPIOZERO_LGPIO"
+except Exception:
+    try:
+        import RPi.GPIO as GPIO
+        GPIO_AVAILABLE = True
+        gpio_mode = "RPI_GPIO"
+    except Exception:
+        try:
+            import rpi_lgpio as GPIO
+            GPIO_AVAILABLE = True
+            gpio_mode = "RPI_LGPIO"
+        except Exception:
+            GPIO = None
+
 
 class RpiGpioStatusPlugin(BasePlugin):
 
     def initialize(self):
-        cfg = self.get_config() or {}
-        self.api_url = cfg.get("api_url", DEFAULT_API_URL).rstrip("/")
-        self.api_token = cfg.get("api_token", DEFAULT_API_TOKEN)
-        self.auto_indicator = cfg.get("auto_indicator_enabled", True)
-        self.success_duration = int(cfg.get("success_duration_sec", 300))
+        cfg = self.get_config()
+        self.pins = cfg.get("gpio_pins", {"red": 22, "yellow": 27, "green": 17})
+        self.led_objects = {}
         self.current_state = "off"
+        
+        self._anim_thread = None
+        self._stop_anim = False
+        self._timer_thread = None
 
-        log.info(f"[Plugin:{self.plugin_id}] Initialized with central gateway at {self.api_url}")
+        if GPIO_AVAILABLE:
+            try:
+                if gpio_mode == "GPIOZERO_LGPIO":
+                    for name, p in self.pins.items():
+                        if name == "yellow":
+                            try:
+                                self.led_objects[name] = PWMLED(p)
+                            except Exception:
+                                self.led_objects[name] = LED(p)
+                        else:
+                            self.led_objects[name] = LED(p)
+                    log.info(f"[Plugin:{self.plugin_id}] Physical Raspberry Pi GPIO initialized via LGPIOFactory (Pins: {self.pins}).")
+                elif gpio_mode in ("RPI_GPIO", "RPI_LGPIO") and globals().get('GPIO') is not None:
+                    GPIO.setmode(GPIO.BCM)
+                    GPIO.setwarnings(False)
+                    for pin in self.pins.values():
+                        GPIO.setup(pin, GPIO.OUT)
+                    log.info(f"[Plugin:{self.plugin_id}] Physical Raspberry Pi GPIO initialized via {gpio_mode} (BCM Pins: {self.pins}).")
+            except Exception as e:
+                log.error(f"[Plugin:{self.plugin_id}] Failed to init GPIO pins: {e}")
+        else:
+            log.info(f"[Plugin:{self.plugin_id}] Running in Mock/Simulation mode.")
+
+        # 1. 启动完成时闪烁绿灯 5 次，然后全灭
         self.on_startup_complete()
 
-    def _get_headers(self) -> dict:
-        headers = {"Content-Type": "application/json"}
-        if self.api_token:
-            if self.api_token.startswith("ey"):
-                headers["Authorization"] = f"Bearer {self.api_token}"
-            else:
-                headers["X-API-Key"] = self.api_token
-        return headers
-
-    def _call_api_async(self, endpoint: str, method: str = "POST", json_data: Optional[dict] = None):
-        """Asynchronous HTTP request without blocking AI/bot thread."""
-        def _worker():
-            try:
-                url = f"{self.api_url}{endpoint}"
-                headers = self._get_headers()
-                if method.upper() == "POST":
-                    requests.post(url, json=json_data or {}, headers=headers, timeout=2.5)
-                elif method.upper() == "DELETE":
-                    requests.delete(url, headers=headers, timeout=2.5)
-                elif method.upper() == "GET":
-                    requests.get(url, headers=headers, timeout=2.5)
-            except Exception as e:
-                log.debug(f"[Plugin:{self.plugin_id}] Call {endpoint} error: {e}")
-        threading.Thread(target=_worker, daemon=True).start()
-
-    def _fetch_snapshot_sync(self) -> Optional[dict]:
-        """Synchronously fetch current LED snapshot from gateway."""
-        try:
-            url = f"{self.api_url}/api/status"
-            res = requests.get(url, headers=self._get_headers(), timeout=2.0)
-            if res.status_code == 200:
-                return res.json()
-        except Exception as e:
-            log.debug(f"[Plugin:{self.plugin_id}] Fetch status error: {e}")
-        return None
-
-    # ==================== 状态切换快捷函数 ====================
-    def on_startup_complete(self):
-        self.current_state = "startup_flashing_green"
-        self._call_api_async("/api/state", "POST", {"state": "startup"})
-
-    def set_state_thinking(self):
-        if not self.auto_indicator: return
-        self.current_state = "thinking_solid_yellow"
-        self._call_api_async("/api/state", "POST", {"state": "thinking", "duration": 300})
-
-    def set_state_breathing_yellow(self):
-        if not self.auto_indicator: return
-        self.current_state = "breathing_yellow"
-        self._call_api_async("/api/state", "POST", {"state": "breathing"})
-
-    def set_state_error(self):
-        if not self.auto_indicator: return
-        self.current_state = "solid_red_error"
-        self._call_api_async("/api/state", "POST", {"state": "error"})
-
-    def set_state_success(self):
-        if not self.auto_indicator: return
-        self.current_state = "success_solid_green"
-        self._call_api_async("/api/state", "POST", {"state": "success", "duration": self.success_duration})
+    def _stop_background_effects(self):
+        """Stops active breathing/blinking threads safely."""
+        self._stop_anim = True
+        if self._anim_thread and self._anim_thread.is_alive() and threading.current_thread() != self._anim_thread:
+            self._anim_thread.join(timeout=1.0)
+        self._stop_anim = False
 
     def turn_all_off(self):
+        """Turns all 3 LEDs off."""
+        self._stop_background_effects()
         self.current_state = "off"
-        self._call_api_async("/api/off", "POST")
+        self._set_raw_pin("red", 0)
+        self._set_raw_pin("yellow", 0)
+        self._set_raw_pin("green", 0)
 
-    def on_service_restarting(self):
-        self.current_state = "restarting_yellow_blink"
-        self._call_api_async("/api/state", "POST", {"state": "restarting"})
+    def _set_raw_pin(self, pin_name: str, level: float):
+        """Sets pin level (0.0 to 1.0)."""
+        pin = self.pins.get(pin_name)
+        if pin is None:
+            return
+        if GPIO_AVAILABLE:
+            try:
+                if gpio_mode == "GPIOZERO_LGPIO" and pin_name in self.led_objects:
+                    obj = self.led_objects[pin_name]
+                    if hasattr(obj, 'value'):
+                        obj.value = max(0.0, min(1.0, level))
+                    else:
+                        if level > 0: obj.on()
+                        else: obj.off()
+                elif globals().get('GPIO') is not None:
+                    GPIO.setup(pin, GPIO.OUT)
+                    GPIO.output(pin, GPIO.HIGH if level > 0 else GPIO.LOW)
+            except Exception as e:
+                log.error(f"[Plugin:{self.plugin_id}] GPIO output error on pin {pin}: {e}")
+        else:
+            log.debug(f"[Plugin:{self.plugin_id}] [MOCK-GPIO] Pin {pin} ({pin_name.upper()}) -> Level {level:.2f}")
 
-    # ==================== AI 对话生命周期拦截 ====================
+    # ==================== 核心状态触发逻辑 ====================
+
+    def on_startup_complete(self):
+        """规则 1d: feishu-bot 启动完成时闪烁绿灯 5 次，然后灭掉"""
+        self.turn_all_off()
+        self.current_state = "startup_complete"
+
+        def _startup_worker():
+            for _ in range(5):
+                if self._stop_anim:
+                    break
+                self._set_raw_pin("green", 1.0)
+                time.sleep(0.2)
+                self._set_raw_pin("green", 0.0)
+                time.sleep(0.2)
+            self.turn_all_off()
+
+        self._anim_thread = threading.Thread(target=_startup_worker, daemon=True)
+        self._anim_thread.start()
+
+    def set_state_thinking(self):
+        """规则 1a: 开始思考时常亮黄灯"""
+        self.turn_all_off()
+        self.current_state = "thinking_solid_yellow"
+        self._set_raw_pin("yellow", 1.0)
+
+    def set_state_breathing_yellow(self):
+        """规则 1b: 使用工具时亮呼吸黄灯"""
+        self.turn_all_off()
+        self.current_state = "breathing_yellow"
+
+        def _breathing_worker():
+            step = 0.05
+            val = 0.1
+            direction = 1
+            while not self._stop_anim:
+                self._set_raw_pin("yellow", val)
+                val += step * direction
+                if val >= 1.0:
+                    val = 1.0
+                    direction = -1
+                elif val <= 0.05:
+                    val = 0.05
+                    direction = 1
+                time.sleep(0.04)
+            self._set_raw_pin("yellow", 0.0)
+
+        self._anim_thread = threading.Thread(target=_breathing_worker, daemon=True)
+        self._anim_thread.start()
+
+    def set_state_error(self):
+        """规则 2: 出现错误 / 被/stop强制停止 常亮红灯"""
+        self.turn_all_off()
+        self.current_state = "solid_red_error"
+        self._set_raw_pin("red", 1.0)
+
+    def set_state_success(self):
+        """规则 3: 任务执行完成 亮绿灯 300 秒然后灭掉"""
+        self.turn_all_off()
+        self.current_state = "solid_green_success_300s"
+        self._set_raw_pin("green", 1.0)
+
+        def _timer_worker():
+            for _ in range(300):
+                if self._stop_anim or self.current_state != "solid_green_success_300s":
+                    return
+                time.sleep(1.0)
+            if self.current_state == "solid_green_success_300s":
+                self.turn_all_off()
+
+        self._timer_thread = threading.Thread(target=_timer_worker, daemon=True)
+        self._timer_thread.start()
+
+    # ==================== HOOK 事件绑定 ====================
+
     async def on_before_ai(self, user_text: str, chat_id: str, session_data: dict) -> tuple[str, dict]:
+        """Hook: 开始 AI 思考 -> 规则 1a 常亮黄灯"""
         self.set_state_thinking()
         return user_text, session_data
 
     async def on_tool_call(self, tool_name: str, tool_args: dict):
+        """Hook: 调用/使用工具 -> 规则 1b 呼吸黄灯"""
         self.set_state_breathing_yellow()
 
-    async def on_after_ai(self, ai_response_text: str, chat_id: str, session_data: dict) -> str:
-        is_err = session_data.get("last_execution_error", False)
-        if not is_err:
-            stripped = ai_response_text.strip()
-            if stripped.startswith(("❌", "⚠️")) or "traceback (most recent call last):" in stripped.lower():
-                is_err = True
+    def on_service_restarting(self):
+        """Hook: feishu-bot 重启服务时 -> 规则 1c 闪烁黄灯"""
+        self.turn_all_off()
+        self.current_state = "restarting_yellow_blink"
 
-        if is_err:
+        def _restarting_worker():
+            state = False
+            while not self._stop_anim:
+                state = not state
+                self._set_raw_pin("yellow", 1.0 if state else 0.0)
+                time.sleep(0.25)
+
+        self._anim_thread = threading.Thread(target=_restarting_worker, daemon=True)
+        self._anim_thread.start()
+
+    async def on_after_ai(self, ai_response_text: str, chat_id: str, session_data: dict) -> str:
+        """Hook: AI 任务响应分析 -> 规则 2 / 规则 3"""
+        # 避让正文中普通的"错误/失败"词汇解释，只有真正发生任务失败、超时、卡死强杀时才亮红灯
+        explicit_error_markers = [
+            "⚠️ 任务已检测到卡死",
+            "⚠️ 任务已被终止",
+            "❌ 执行失败",
+            "❌ 运行超时",
+            "⚠️ 任务超时",
+            "❌ 任务出错"
+        ]
+        if any(marker in ai_response_text for marker in explicit_error_markers):
             self.set_state_error()
         else:
             self.set_state_success()
         return ai_response_text
 
-    # ==================== 飞书命令处理 (/led, /light) ====================
-    async def on_command(self, command: str, args: str, chat_id: str, message_id: str, session_data: dict) -> bool:
-        if command.lower() not in ["/led", "/light"]:
-            return False
-
-        args_parts = args.strip().split() if args else []
-        subcmd = args_parts[0].lower() if args_parts else ""
-
-        if not subcmd or subcmd in ["status", "panel"]:
-            snapshot = self._fetch_snapshot_sync()
-            card = self.build_control_card(snapshot)
-            self.send_reply_card(message_id, card)
-            return True
-
-        elif subcmd in ["off", "stop"]:
-            self.turn_all_off()
-            self.send_reply_text(message_id, "⏹️ 所有物理指示灯通道已全部熄灭。")
-            return True
-
-        elif subcmd in ["thinking", "think"]:
-            self.set_state_thinking()
-            self.send_reply_text(message_id, "🟡 已切换至【思考中】(黄灯常亮)")
-            return True
-
-        elif subcmd in ["breathing", "breath", "run"]:
-            self.set_state_breathing_yellow()
-            self.send_reply_text(message_id, "✨ 已切换至【任务执行中】(平滑正弦呼吸黄灯)")
-            return True
-
-        elif subcmd in ["success", "ok"]:
-            self.set_state_success()
-            self.send_reply_text(message_id, f"🟢 已切换至【任务完成】(绿灯常亮 {self.success_duration}s)")
-            return True
-
-        elif subcmd in ["error", "err", "fail"]:
-            self.set_state_error()
-            self.send_reply_text(message_id, "🔴 已切换至【系统异常】(红灯常亮)")
-            return True
-
-        elif subcmd in ["startup", "check"]:
-            self.on_startup_complete()
-            self.send_reply_text(message_id, "🔄 已触发【开机自检】(绿灯连闪 5 次)")
-            return True
-
-        elif subcmd == "timer" and len(args_parts) >= 3:
-            color = args_parts[1].lower()
-            try:
-                secs = int(args_parts[2])
-                self._call_api_async("/api/timer", "POST", {"color": color, "duration_sec": secs, "fade_out_sec": 5})
-                self.send_reply_text(message_id, f"⏱️ 已为 {color.upper()} 启动 {secs} 秒智能倒计时 (结束前渐暗关灯)")
-            except ValueError:
-                self.send_reply_text(message_id, "⚠️ 请输入正确的秒数，格式：`/led timer green 60`")
-            return True
-
-        elif subcmd == "pattern" and len(args_parts) >= 2:
-            p_name = args_parts[1].lower()
-            self._call_api_async("/api/pattern", "POST", {"name": p_name, "repeat": 5})
-            self.send_reply_text(message_id, f"🎭 正在播放动效序列：`{p_name}`")
-            return True
-
-        else:
-            help_text = (
-                "🍓 **树莓派 LED 状态指示控制指令**：\n\n"
-                "• `/led` 或 `/light`：弹出交互式控制面板卡片\n"
-                "• `/led thinking`：思考中 (黄灯常亮)\n"
-                "• `/led breathing`：任务执行中 (正弦呼吸黄灯)\n"
-                "• `/led success`：成功完成 (常亮绿灯 300s)\n"
-                "• `/led error`：系统异常 (常亮红灯)\n"
-                "• `/led startup`：开机自检 (绿灯连闪 5 次)\n"
-                "• `/led timer <color> <sec>`：启动倒计时渐暗关灯\n"
-                "• `/led pattern <name>`：播放动效 (police_alert / rainbow_flow 等)\n"
-                "• `/led off`：熄灭所有通道"
-            )
-            self.send_reply_text(message_id, help_text)
-            return True
-
-    # ==================== 飞书交互式卡片事件响应 ====================
-    async def on_card_action(self, action: str, value: dict, chat_id: str, card_message_id: str) -> bool:
-        if action == "set_led_state":
-            target_state = value.get("state", "off")
-            dur = int(value.get("duration", 300))
-            self._call_api_async("/api/state", "POST", {"state": target_state, "duration": dur})
-            time.sleep(0.3)
-            new_snapshot = self._fetch_snapshot_sync()
-            card = self.build_control_card(new_snapshot)
-            patch_interactive_card_sdk(card_message_id, card)
-            return True
-
-        elif action == "play_led_pattern":
-            pat_name = value.get("pattern", "police_alert")
-            self._call_api_async("/api/pattern", "POST", {"name": pat_name, "repeat": 5})
-            time.sleep(0.3)
-            new_snapshot = self._fetch_snapshot_sync()
-            card = self.build_control_card(new_snapshot)
-            patch_interactive_card_sdk(card_message_id, card)
-            return True
-
-        elif action == "start_led_timer":
-            color = value.get("color", "green")
-            secs = int(value.get("duration_sec", 60))
-            self._call_api_async("/api/timer", "POST", {"color": color, "duration_sec": secs, "fade_out_sec": 5})
-            time.sleep(0.3)
-            new_snapshot = self._fetch_snapshot_sync()
-            card = self.build_control_card(new_snapshot)
-            patch_interactive_card_sdk(card_message_id, card)
-            return True
-
-        elif action == "turn_off_all":
-            self.turn_all_off()
-            time.sleep(0.3)
-            new_snapshot = self._fetch_snapshot_sync()
-            card = self.build_control_card(new_snapshot)
-            patch_interactive_card_sdk(card_message_id, card)
-            return True
-
-        elif action == "refresh_led_card":
-            new_snapshot = self._fetch_snapshot_sync()
-            card = self.build_control_card(new_snapshot)
-            patch_interactive_card_sdk(card_message_id, card)
-            return True
-
-        return False
-
-    # ==================== 构建飞书交互式卡片 ====================
-    def build_control_card(self, snapshot: Optional[dict] = None) -> dict:
-        raw_state = "unknown"
-        mode_str = "HTTP 网关连接"
-        timer_info = "未激活"
-        pins_info = "🔴 22 | 🟡 27 | 🟢 17"
-        header_color = "blue"
-
-        if snapshot:
-            raw_state = snapshot.get("current_state", "off")
-            hw = snapshot.get("hardware", {})
-            mode_str = f"{hw.get('mode', 'MOCK')} {'(Gamma 2.2)' if hw.get('gamma_correction') else ''}"
-            pins = hw.get("pins", {})
-            if pins:
-                pins_info = f"🔴 GPIO {pins.get('red', 22)} | 🟡 GPIO {pins.get('yellow', 27)} | 🟢 GPIO {pins.get('green', 17)}"
-            st = snapshot.get("smart_timer", {})
-            if st and st.get("active"):
-                timer_info = f"🟢 剩余 {st.get('remaining_seconds')}s / {st.get('total_duration')}s"
-
-        state_map = {
-            "thinking_solid_yellow": ("🟡 思考中 (Solid Yellow)", "orange"),
-            "thinking": ("🟡 思考中 (Solid Yellow)", "orange"),
-            "breathing_yellow": ("✨ 任务执行中 (Breathing Yellow)", "orange"),
-            "breathing": ("✨ 任务执行中 (Breathing Yellow)", "orange"),
-            "restarting_yellow_blink": ("⚡ 重启中 (Blink Yellow)", "orange"),
-            "success_solid_green": ("🟢 任务成功完成 (Solid Green)", "green"),
-            "solid_green_success_300s": ("🟢 任务成功完成 (Solid Green)", "green"),
-            "solid_red_error": ("🔴 系统异常告警 (Solid Red)", "red"),
-            "error": ("🔴 系统异常告警 (Solid Red)", "red"),
-            "startup_flashing_green": ("🔄 开机自检中 (Startup)", "blue"),
-            "off": ("⏹️ 全部熄灭 (Off)", "grey"),
+    def build_control_card(self) -> dict:
+        mode_desc = f"硬件 物理接口 ({gpio_mode})" if GPIO_AVAILABLE else "模拟日志模式 (Non-RPi)"
+        
+        status_map = {
+            "thinking_solid_yellow": ("🟡 开始思考中 (常亮黄灯)", "yellow"),
+            "breathing_yellow": ("⚡ 使用工具中 (呼吸黄灯)", "orange"),
+            "solid_red_error": ("🔴 出现错误 / 被/stop强制停止 (常亮红灯)", "red"),
+            "solid_green_success_300s": ("🟢 任务完成 (常亮绿灯 300s 后自动灭掉)", "green"),
+            "startup_complete": ("✨ 启动完成 (绿灯闪烁 5 次自检)", "purple"),
+            "off": ("⚪ 指示灯已关闭 (全灭)", "wathet")
         }
+        status_badge, header_template = status_map.get(self.current_state, ("⚪ 已关灯", "wathet"))
 
-        display_name, header_color = state_map.get(raw_state, (f"💡 运行中 ({raw_state})", "blue"))
-
-        elements = [
-            {
-                "tag": "markdown",
-                "content": (
-                    f"**💡 当前硬件状态**：**{display_name}**\n\n"
-                    f"• **网关地址**：`{self.api_url}`\n"
-                    f"• **硬件引脚**：`{pins_info}`\n"
-                    f"• **驱动模式**：`{mode_str}`\n"
-                    f"• **智能倒计时**：`{timer_info}`"
-                )
-            },
-            {"tag": "hr"},
-            {
-                "tag": "markdown",
-                "content": "**🎯 快速切换系统预设**"
-            },
-            {
-                "tag": "action",
-                "layout": "flow",
-                "actions": [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🟡 思考中"},
-                        "type": "default",
-                        "value": {"action": "set_led_state", "state": "thinking", "duration": 300}
-                    },
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "✨ 正弦呼吸"},
-                        "type": "primary",
-                        "value": {"action": "set_led_state", "state": "breathing"}
-                    },
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🟢 成功完成"},
-                        "type": "primary",
-                        "value": {"action": "set_led_state", "state": "success", "duration": self.success_duration}
-                    },
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🔴 异常报错"},
-                        "type": "danger",
-                        "value": {"action": "set_led_state", "state": "error"}
-                    }
-                ]
-            },
-            {
-                "tag": "markdown",
-                "content": "**🎭 动效与智能倒计时**"
-            },
-            {
-                "tag": "action",
-                "layout": "flow",
-                "actions": [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🚨 警报动效"},
-                        "type": "danger",
-                        "value": {"action": "play_led_pattern", "pattern": "police_alert"}
-                    },
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🌈 流水动效"},
-                        "type": "default",
-                        "value": {"action": "play_led_pattern", "pattern": "rainbow_flow"}
-                    },
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "⏱️ 番茄钟 25m"},
-                        "type": "primary",
-                        "value": {"action": "start_led_timer", "color": "green", "duration_sec": 1500}
-                    },
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "⏹️ 熄灭全灯"},
-                        "type": "default",
-                        "value": {"action": "turn_off_all"}
-                    }
-                ]
-            },
-            {"tag": "hr"},
-            {
-                "tag": "action",
-                "layout": "flow",
-                "actions": [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🔄 刷新实时状态"},
-                        "type": "default",
-                        "value": {"action": "refresh_led_card"}
-                    }
-                ]
-            }
-        ]
-
-        return {
+        card = {
             "config": {"wide_screen_mode": True},
             "header": {
-                "title": {
-                    "tag": "plain_text",
-                    "content": "🍓 树莓派 LED 状态指示控制台"
-                },
-                "template": header_color
+                "title": {"tag": "plain_text", "content": "🍓 树莓派 GPIO 状态灯控制台"},
+                "template": header_template
             },
-            "elements": elements
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": f"**当前设备灯光状态**：`{status_badge}`\n"
+                               f"**硬件工作模式**：`{mode_desc}`\n\n"
+                               f"**精准规则引脚映射 (BCM 编码)**：\n"
+                               f"• 🔴 **红灯 (Error / /stop)**：GPIO `{self.pins.get('red')}`\n"
+                               f"• 🟡 **黄灯 (Thinking / Tool)**：GPIO `{self.pins.get('yellow')}`\n"
+                               f"• 🟢 **绿灯 (Success / Startup)**：GPIO `{self.pins.get('green')}`"
+                },
+                {"tag": "hr"},
+                {
+                    "tag": "markdown",
+                    "content": "**🎛️ 快捷逻辑调试测试组：**"
+                },
+                {
+                    "tag": "action",
+                    "layout": "flow",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "🟡 思考中 (常亮黄灯)"},
+                            "type": "warning",
+                            "value": {"action": "set_rpi_light", "state": "thinking"}
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "⚡ 使用工具中 (呼吸黄灯)"},
+                            "type": "warning",
+                            "value": {"action": "set_rpi_light", "state": "breathing"}
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "🔴 错误/强停 (常亮红灯)"},
+                            "type": "danger",
+                            "value": {"action": "set_rpi_light", "state": "error"}
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "🟢 任务完成 (绿灯300s)"},
+                            "type": "primary",
+                            "value": {"action": "set_rpi_light", "state": "success"}
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "✨ 启动自检 (绿灯闪5次)"},
+                            "type": "primary",
+                            "value": {"action": "set_rpi_light", "state": "startup"}
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "⚪ 关闭所有灯"},
+                            "type": "default",
+                            "value": {"action": "set_rpi_light", "state": "off"}
+                        }
+                    ]
+                }
+            ]
         }
+        return card
+
+    async def on_command(self, command: str, args: str, chat_id: str, message_id: str, session_data: dict) -> bool:
+        cmd_lower = command.lower()
+        if cmd_lower in ["/stop", "/cancel"]:
+            # 规则 2: 被/stop强制停止 常亮红灯
+            self.set_state_error()
+            return False
+
+        if cmd_lower in ["/light", "/led"]:
+            sub_cmd = args.strip().lower()
+            if sub_cmd in ["thinking", "yellow", "思考"]:
+                self.set_state_thinking()
+            elif sub_cmd in ["breathing", "tool", "呼吸"]:
+                self.set_state_breathing_yellow()
+            elif sub_cmd in ["red", "error", "stop", "错误"]:
+                self.set_state_error()
+            elif sub_cmd in ["green", "success", "完成"]:
+                self.set_state_success()
+            elif sub_cmd in ["startup", "test", "自检"]:
+                self.on_startup_complete()
+            elif sub_cmd in ["off", "关灯"]:
+                self.turn_all_off()
+
+            card = self.build_control_card()
+            self.send_reply_card(message_id, card)
+            return True
+        return False
+
+    async def on_card_action(self, action: str, value: dict, chat_id: str, card_message_id: str) -> bool:
+        act = action or (value.get("action") if isinstance(value, dict) else "")
+        if act == "set_rpi_light":
+            st = value.get("state", "") if isinstance(value, dict) else ""
+            if st == "thinking":
+                self.set_state_thinking()
+            elif st == "breathing":
+                self.set_state_breathing_yellow()
+            elif st == "error":
+                self.set_state_error()
+            elif st == "success":
+                self.set_state_success()
+            elif st == "startup":
+                self.on_startup_complete()
+            elif st == "off":
+                self.turn_all_off()
+
+            card = self.build_control_card()
+            from lark_client import patch_interactive_card_sdk
+            patch_interactive_card_sdk(card_message_id, card)
+            return True
+        return False

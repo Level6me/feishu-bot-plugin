@@ -1,7 +1,10 @@
 {
   "enabled": true,
-  "api_url": "http://127.0.0.1:8080",
-  "api_token": "ipad_pro_secret_888",
-  "auto_indicator_enabled": true,
-  "success_duration_sec": 300
+  "hardware_mode": "auto",
+  "gpio_pins": {
+    "red": 22,
+    "yellow": 27,
+    "green": 17
+  },
+  "blink_interval_sec": 0.3
 }
