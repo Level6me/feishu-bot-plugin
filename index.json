@@ -17,11 +17,19 @@
   },
   {
     "id": "rpi_gpio_status",
-    "name": "🍓 树莓派 GPIO 状态灯指示 (API 版)",
+    "name": "🍓 树莓派 GPIO 状态灯指示 (物理直驱版)",
     "author": "Antigravity",
-    "version": "2.0.0",
+    "version": "1.0.0",
     "repo_url": "https://github.com/Level6me/feishu-bot-plugin",
-    "description": "基于 pi_led_api HTTP 网关控制红绿黄三色 LED，实时联动 AI 思考、工具调用与任务状态"
+    "description": "直接通过树莓派底层 GPIO 硬件驱动控制红绿黄三色 LED 灯"
+  },
+  {
+    "id": "rpi_gpio_api_status",
+    "name": "🍓 树莓派 GPIO 状态灯指示 (API 网关版)",
+    "author": "Antigravity",
+    "version": "1.0.0",
+    "repo_url": "https://github.com/Level6me/feishu-bot-plugin",
+    "description": "基于 pi_led_api 集中式 HTTP 网关控制红绿黄三色 LED，支持动效剧场与交互式卡片"
   },
   {
     "id": "cron_scheduler",
