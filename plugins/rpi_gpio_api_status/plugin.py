@@ -19,7 +19,7 @@ from typing import Optional, Dict, Any, Tuple
 
 from plugin_base import BasePlugin
 from logger import log
-from lark_client import patch_interactive_card_sdk, send_reply_sdk
+from lark_client import patch_interactive_card_sdk, send_reply_sdk, send_text_to_chat_sdk
 
 DEFAULT_API_URL = "http://127.0.0.1:8080"
 DEFAULT_API_TOKEN = os.getenv("API_TOKEN", "")
@@ -214,7 +214,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
                 text_val = user_text.strip()
                 if text_val.lower() in ["取消", "cancel", "退出", "q"]:
                     self.pending_input.pop(chat_id, None)
-                    send_reply_sdk(chat_id, "⚪ 已取消配置修改。")
+                    send_text_to_chat_sdk(chat_id, "⚪ 已取消配置修改。")
                     return "", session_data
 
                 if pending_mode == "waiting_url":
@@ -228,7 +228,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
                         f"• **实时连通性测试**：{res_badge}\n\n"
                         f"💡 发送 `/led` 可重新打开主控制台卡片。"
                     )
-                    send_reply_sdk(chat_id, reply_msg)
+                    send_text_to_chat_sdk(chat_id, reply_msg)
                     return "", session_data
 
                 elif pending_mode == "waiting_token":
@@ -244,7 +244,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
                         f"• **实时连通性测试**：{res_badge}\n\n"
                         f"💡 发送 `/led` 可重新打开主控制台卡片。"
                     )
-                    send_reply_sdk(chat_id, reply_msg)
+                    send_text_to_chat_sdk(chat_id, reply_msg)
                     return "", session_data
 
         self.set_state_thinking()
