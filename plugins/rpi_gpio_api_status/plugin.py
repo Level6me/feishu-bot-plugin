@@ -1,5 +1,5 @@
 """
-🍓 Raspberry Pi GPIO LED Status Indicator Plugin (API Gateway Edition)
+🍓 Raspberry Pi GPIO LED Status Indicator Plugin (API Gateway Edition v2.0)
 for antigravity-feishu-bot.
 
 Features:
@@ -24,6 +24,15 @@ from lark_client import patch_interactive_card_sdk, send_reply_sdk
 DEFAULT_API_URL = "http://127.0.0.1:8080"
 DEFAULT_API_TOKEN = os.getenv("API_TOKEN", "")
 
+def _is_valid_url(url: str) -> bool:
+    """Validate if the string is likely a valid HTTP(S) URL or IP endpoint."""
+    u = url.strip().lower()
+    if u.startswith(("http://", "https://", "ws://", "wss://", "127.0.0.1", "localhost")):
+        return True
+    if "." in u and (":" in u or "/" in u):
+        return True
+    return False
+
 class RpiGpioApiStatusPlugin(BasePlugin):
 
     def initialize(self):
@@ -33,13 +42,18 @@ class RpiGpioApiStatusPlugin(BasePlugin):
             log.info(f"[Plugin:{self.plugin_id}] Disabled via config.json.")
             return
 
-        self.api_url = self.config_data.get("api_url", DEFAULT_API_URL).rstrip("/")
+        raw_url = self.config_data.get("api_url", DEFAULT_API_URL).rstrip("/")
+        # Safety fallback if config was corrupted
+        if not _is_valid_url(raw_url):
+            raw_url = DEFAULT_API_URL
+
+        self.api_url = raw_url
         self.api_token = self.config_data.get("api_token", DEFAULT_API_TOKEN)
         self.auto_indicator = self.config_data.get("auto_indicator_enabled", True)
         self.success_duration = int(self.config_data.get("success_duration_sec", 300))
         self.current_state = "off"
         self.last_test_result: Optional[dict] = None
-        self.pending_input: Dict[str, str] = {}  # chat_id -> "waiting_url" | "waiting_token"
+        self.pending_input: Dict[str, Tuple[str, float]] = {}  # chat_id -> ("waiting_url"|"waiting_token", timestamp)
 
         log.info(f"[Plugin:{self.plugin_id}] Initialized with central gateway at {self.api_url}")
         self.on_startup_complete()
@@ -48,7 +62,12 @@ class RpiGpioApiStatusPlugin(BasePlugin):
         """保存配置到插件本地 config.json 并实时热更新内存属性"""
         self.config_data.update(new_configs)
         if "api_url" in new_configs:
-            self.api_url = new_configs["api_url"].rstrip("/")
+            u = new_configs["api_url"].rstrip("/")
+            if _is_valid_url(u):
+                if not u.startswith("http://") and not u.startswith("https://"):
+                    u = f"http://{u}"
+                self.api_url = u
+                self.config_data["api_url"] = u
         if "api_token" in new_configs:
             self.api_token = new_configs["api_token"]
         if "auto_indicator_enabled" in new_configs:
@@ -104,6 +123,9 @@ class RpiGpioApiStatusPlugin(BasePlugin):
     def test_gateway_connection(self, custom_url: Optional[str] = None, custom_token: Optional[str] = None) -> dict:
         """测试目标网关连通性并测量网络 RTT 延迟"""
         target_url = (custom_url or self.api_url).rstrip("/")
+        if not target_url.startswith("http://") and not target_url.startswith("https://"):
+            target_url = f"http://{target_url}"
+
         headers = self._get_headers(custom_token)
         start_t = time.perf_counter()
         try:
@@ -181,35 +203,46 @@ class RpiGpioApiStatusPlugin(BasePlugin):
     async def on_before_ai(self, user_text: str, chat_id: str, session_data: dict) -> tuple[str, dict]:
         if not getattr(self, "enabled", True): return user_text, session_data
 
-        # 检查是否处于等待用户输入配置的状态
-        pending_mode = self.pending_input.get(chat_id)
-        if pending_mode:
-            text_val = user_text.strip()
-            if text_val.lower() in ["取消", "cancel", "退出", "q"]:
+        # 检查是否处于等待用户输入配置的状态 (带 120 秒超时机制)
+        pending_item = self.pending_input.get(chat_id)
+        if pending_item:
+            pending_mode, ts = pending_item
+            # 超时清理
+            if time.time() - ts > 120:
                 self.pending_input.pop(chat_id, None)
-                snapshot = self._fetch_snapshot_sync()
-                card = self.build_control_card(snapshot, view_mode="config", info_banner="⚪ 已取消配置输入。")
-                send_reply_sdk(chat_id, card)
-                return "", session_data
+                pending_mode = None
 
-            if pending_mode == "waiting_url":
-                self.pending_input.pop(chat_id, None)
-                self.save_config_file({"api_url": text_val})
-                test_res = self.test_gateway_connection()
-                snapshot = self._fetch_snapshot_sync()
-                card = self.build_control_card(snapshot, view_mode="config", test_banner=test_res, info_banner=f"✅ 网关 URL 已成功修改为 `{self.api_url}`")
-                send_reply_sdk(chat_id, card)
-                return "", session_data
+            if pending_mode:
+                text_val = user_text.strip()
+                if text_val.lower() in ["取消", "cancel", "退出", "q"]:
+                    self.pending_input.pop(chat_id, None)
+                    snapshot = self._fetch_snapshot_sync()
+                    card = self.build_control_card(snapshot, view_mode="config", info_banner="⚪ 已取消配置输入。")
+                    send_reply_sdk(chat_id, card)
+                    return "", session_data
 
-            elif pending_mode == "waiting_token":
-                self.pending_input.pop(chat_id, None)
-                new_tok = "" if text_val.lower() in ("0", "none", "null", "空", "清空", "无") else text_val
-                self.save_config_file({"api_token": new_tok})
-                test_res = self.test_gateway_connection()
-                snapshot = self._fetch_snapshot_sync()
-                card = self.build_control_card(snapshot, view_mode="config", test_banner=test_res, info_banner="✅ API Token 已成功更新！")
-                send_reply_sdk(chat_id, card)
-                return "", session_data
+                if pending_mode == "waiting_url":
+                    if _is_valid_url(text_val):
+                        self.pending_input.pop(chat_id, None)
+                        self.save_config_file({"api_url": text_val})
+                        test_res = self.test_gateway_connection()
+                        snapshot = self._fetch_snapshot_sync()
+                        card = self.build_control_card(snapshot, view_mode="config", test_banner=test_res, info_banner=f"✅ 网关 URL 已成功修改为 `{self.api_url}`")
+                        send_reply_sdk(chat_id, card)
+                        return "", session_data
+                    else:
+                        # 输入的不是合法 URL 格式，跳过并清除，不误拦截正常聊天
+                        self.pending_input.pop(chat_id, None)
+
+                elif pending_mode == "waiting_token":
+                    self.pending_input.pop(chat_id, None)
+                    new_tok = "" if text_val.lower() in ("0", "none", "null", "空", "清空", "无") else text_val
+                    self.save_config_file({"api_token": new_tok})
+                    test_res = self.test_gateway_connection()
+                    snapshot = self._fetch_snapshot_sync()
+                    card = self.build_control_card(snapshot, view_mode="config", test_banner=test_res, info_banner="✅ API Token 已成功更新！")
+                    send_reply_sdk(chat_id, card)
+                    return "", session_data
 
         self.set_state_thinking()
         return user_text, session_data
@@ -353,7 +386,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
             patch_interactive_card_sdk(card_message_id, card)
             return True
 
-        # 2. 视图切换
+        # 2. 视图切换 (进入配置 / 返回控制台)
         elif act == "switch_led_view":
             target_view = value.get("view", "control")
             snapshot = self._fetch_snapshot_sync()
@@ -363,7 +396,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
 
         # 3. 交互式按钮：触发输入网关 URL 提示
         elif act == "prompt_input_url":
-            self.pending_input[chat_id] = "waiting_url"
+            self.pending_input[chat_id] = ("waiting_url", time.time())
             snapshot = self._fetch_snapshot_sync()
             info = "💬 **请直接在聊天框中回复新的【LED 网关地址】**\n*(例如：`http://127.0.0.1:8080` 或 `https://your-domain.com`，回复「取消」可退出)*"
             card = self.build_control_card(snapshot, view_mode="config", info_banner=info)
@@ -372,7 +405,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
 
         # 4. 交互式按钮：触发输入 API Token 提示
         elif act == "prompt_input_token":
-            self.pending_input[chat_id] = "waiting_token"
+            self.pending_input[chat_id] = ("waiting_token", time.time())
             snapshot = self._fetch_snapshot_sync()
             info = "💬 **请直接在聊天框中回复新的【API Token 密钥】**\n*(若免密请回复「空」或「0」，回复「取消」可退出)*"
             card = self.build_control_card(snapshot, view_mode="config", info_banner=info)
