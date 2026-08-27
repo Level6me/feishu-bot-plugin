@@ -665,8 +665,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
                         f"**💡 当前硬件状态**：**{display_name}**\n\n"
                         f"• **网关服务**：`{self.api_url}` (Token: `{masked_token}`)\n"
                         f"• **硬件引脚**：`{pins_info}`\n"
-                        f"• **驱动模式**：`{mode_str}`\n"
-                        f"• **智能倒计时**：`{timer_info}`"
+                        f"• **驱动模式**：`{mode_str}`"
                     )
                 },
                 {"tag": "hr"},
@@ -701,34 +700,6 @@ class RpiGpioApiStatusPlugin(BasePlugin):
                             "text": {"tag": "plain_text", "content": "🔴 异常报错"},
                             "type": "danger",
                             "value": {"action": "set_led_state", "state": "error"}
-                        }
-                    ]
-                },
-                {
-                    "tag": "markdown",
-                    "content": "**🎭 动效与智能倒计时**"
-                },
-                {
-                    "tag": "action",
-                    "layout": "flow",
-                    "actions": [
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "🚨 警报动效"},
-                            "type": "danger",
-                            "value": {"action": "play_led_pattern", "pattern": "police_alert"}
-                        },
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "🌈 流水动效"},
-                            "type": "default",
-                            "value": {"action": "play_led_pattern", "pattern": "rainbow_flow"}
-                        },
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "⏱️ 番茄钟 25m"},
-                            "type": "primary",
-                            "value": {"action": "start_led_timer", "color": "green", "duration_sec": 1500}
                         },
                         {
                             "tag": "button",
