@@ -953,6 +953,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
                     "actions": [
                         {"tag": "button", "text": {"tag": "plain_text", "content": f"LED联动: {'🟢 开启' if self.auto_indicator else '⚪ 停用'}"}, "type": "primary" if self.auto_indicator else "default", "value": {"action": "toggle_auto_indicator"}},
                         {"tag": "button", "text": {"tag": "plain_text", "content": f"提示音: {buzzer_switch_text}"}, "type": "primary" if self.buzzer_enabled else "default", "value": {"action": "toggle_buzzer_enabled"}},
+                        {"tag": "button", "text": {"tag": "plain_text", "content": f"{'✓ ' if self.buzzer_volume == 1 else ''}音量 1%"}, "type": "primary" if self.buzzer_volume == 1 else "default", "value": {"action": "set_buzzer_volume", "volume": 1}},
                         {"tag": "button", "text": {"tag": "plain_text", "content": f"{'✓ ' if self.buzzer_volume == 5 else ''}音量 5%"}, "type": "primary" if self.buzzer_volume == 5 else "default", "value": {"action": "set_buzzer_volume", "volume": 5}},
                         {"tag": "button", "text": {"tag": "plain_text", "content": f"{'✓ ' if self.buzzer_volume == 10 else ''}音量 10%"}, "type": "primary" if self.buzzer_volume == 10 else "default", "value": {"action": "set_buzzer_volume", "volume": 10}},
                         {"tag": "button", "text": {"tag": "plain_text", "content": f"{'✓ ' if self.buzzer_volume == 15 else ''}音量 15%"}, "type": "primary" if self.buzzer_volume == 15 else "default", "value": {"action": "set_buzzer_volume", "volume": 15}}
