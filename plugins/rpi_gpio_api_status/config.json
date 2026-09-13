@@ -6,6 +6,7 @@
   "buzzer_api_token": "",
   "buzzer_enabled": true,
   "buzzer_volume": 10,
+  "buzzer_interval": 15,
   "auto_indicator_enabled": true,
   "success_duration_sec": 300
 }

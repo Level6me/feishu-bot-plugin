@@ -56,6 +56,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
         self.buzzer_api_token = DEFAULT_BUZZER_TOKEN
         self.buzzer_enabled = True
         self.buzzer_volume = 10
+        self.buzzer_interval = 15
         self.auto_indicator = True
         self.success_duration = 300
         self.current_state = "off"
@@ -87,6 +88,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
         self.buzzer_api_token = self.config_data.get("buzzer_api_token", DEFAULT_BUZZER_TOKEN)
         self.buzzer_enabled = self.config_data.get("buzzer_enabled", True)
         self.buzzer_volume = int(self.config_data.get("buzzer_volume", 10))
+        self.buzzer_interval = int(self.config_data.get("buzzer_interval", 15))
 
         # 自动联动与时长参数
         self.auto_indicator = self.config_data.get("auto_indicator_enabled", True)
@@ -150,6 +152,8 @@ class RpiGpioApiStatusPlugin(BasePlugin):
             self.buzzer_enabled = bool(new_configs["buzzer_enabled"])
         if "buzzer_volume" in new_configs:
             self.buzzer_volume = max(0, min(100, int(new_configs["buzzer_volume"])))
+        if "buzzer_interval" in new_configs:
+            self.buzzer_interval = max(3, int(new_configs["buzzer_interval"]))
         if "auto_indicator_enabled" in new_configs:
             self.auto_indicator = bool(new_configs["auto_indicator_enabled"])
         if "success_duration_sec" in new_configs:
@@ -278,8 +282,9 @@ class RpiGpioApiStatusPlugin(BasePlugin):
             elif m == "tool":
                 self.play_melody("two_beeps")
 
-            # 2. 每隔 10.0 秒循环提示，直到被中断或任务结束
-            while not evt.wait(10.0):
+            # 2. 依据配置的间隔秒数循环提示，直到被中断或任务结束
+            interval = float(getattr(self, "buzzer_interval", 15))
+            while not evt.wait(interval):
                 if evt.is_set():
                     break
                 if m == "thinking":
@@ -746,7 +751,8 @@ class RpiGpioApiStatusPlugin(BasePlugin):
                 "api_token": DEFAULT_API_TOKEN,
                 "buzzer_api_url": DEFAULT_BUZZER_URL,
                 "buzzer_api_token": DEFAULT_BUZZER_TOKEN,
-                "buzzer_volume": 10
+                "buzzer_volume": 10,
+                "buzzer_interval": 15
             })
             test_res = self.test_gateway_connection()
             snapshot = self._fetch_snapshot_sync()
@@ -786,6 +792,17 @@ class RpiGpioApiStatusPlugin(BasePlugin):
             snapshot = self._fetch_snapshot_sync()
             buzzer_snapshot = self._fetch_buzzer_status_sync()
             card = self.build_control_card(snapshot, buzzer_snapshot, view_mode="config")
+            patch_interactive_card_sdk(card_message_id, card)
+            return True
+
+        # 11.1 调整思考与工具调用提示音循环间隔时间
+        elif act == "set_buzzer_interval":
+            inv = int(value.get("interval", 15))
+            self.save_config_file({"buzzer_interval": inv})
+            self.play_melody("beep")
+            snapshot = self._fetch_snapshot_sync()
+            buzzer_snapshot = self._fetch_buzzer_status_sync()
+            card = self.build_control_card(snapshot, buzzer_snapshot, view_mode="config", info_banner=f"✅ 提示音循环间隔已设为 {inv} 秒")
             patch_interactive_card_sdk(card_message_id, card)
             return True
 
@@ -925,7 +942,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
                         f"• **LED 网关服务**：`{self.api_url}` (Token: `{masked_led_token}`)\n"
                         f"• **蜂鸣器网关服务**：`{self.buzzer_api_url}` (Token: `{masked_buzzer_token}`)\n"
                         f"• **指示灯自动联动**：`{'🟢 开启中' if self.auto_indicator else '⚪ 已停用'}` | 成功常亮：`{self.success_duration}s`\n"
-                        f"• **蜂鸣器提示音联动**：`{buzzer_switch_text}` | 默认音量：`{self.buzzer_volume}%`"
+                        f"• **蜂鸣器提示音联动**：`{buzzer_switch_text}` | 默认音量：`{self.buzzer_volume}%` | 循环间隔：`{self.buzzer_interval}s`"
                     )
                 },
                 {"tag": "hr"},
@@ -959,6 +976,19 @@ class RpiGpioApiStatusPlugin(BasePlugin):
                         {"tag": "button", "text": {"tag": "plain_text", "content": f"{'✓ ' if self.buzzer_volume == 15 else ''}音量 15%"}, "type": "primary" if self.buzzer_volume == 15 else "default", "value": {"action": "set_buzzer_volume", "volume": 15}}
                     ]
                 },
+                {
+                    "tag": "markdown",
+                    "content": f"**🔔 3. 思考/工具调用循环提示音间隔：** (当前: `{self.buzzer_interval}秒`)"
+                },
+                {
+                    "tag": "action",
+                    "layout": "flow",
+                    "actions": [
+                        {"tag": "button", "text": {"tag": "plain_text", "content": f"{'✓ ' if self.buzzer_interval == 15 else ''}间隔 15秒"}, "type": "primary" if self.buzzer_interval == 15 else "default", "value": {"action": "set_buzzer_interval", "interval": 15}},
+                        {"tag": "button", "text": {"tag": "plain_text", "content": f"{'✓ ' if self.buzzer_interval == 20 else ''}间隔 20秒"}, "type": "primary" if self.buzzer_interval == 20 else "default", "value": {"action": "set_buzzer_interval", "interval": 20}},
+                        {"tag": "button", "text": {"tag": "plain_text", "content": f"{'✓ ' if self.buzzer_interval == 30 else ''}间隔 30秒"}, "type": "primary" if self.buzzer_interval == 30 else "default", "value": {"action": "set_buzzer_interval", "interval": 30}}
+                    ]
+                },
                 {"tag": "hr"},
                 {
                     "tag": "action",
@@ -974,7 +1004,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
             header_color = "blue"
 
         else:
-            # ==================== 重构后的综合控制面板 ====================
+            # ==================== 标准控制看板视图 ====================
             elements.extend([
                 {
                     "tag": "markdown",
@@ -982,7 +1012,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
                         f"**💡 当前 LED 状态**：**{display_name}**\n"
                         f"• 引脚：`{pins_info}` | 驱动：`{mode_str}`\n\n"
                         f"**🔊 当前蜂鸣器状态**：**{buzzer_desc}**\n"
-                        f"• 硬件通道：`GPIO 18 (PWM0)` | 音量：`{self.buzzer_volume}%` | 联动：`{buzzer_switch_text}`"
+                        f"• 硬件通道：`GPIO 18 (PWM0)` | 音量：`{self.buzzer_volume}%` | 间隔：`{self.buzzer_interval}s` | 联动：`{buzzer_switch_text}`"
                     )
                 },
                 {"tag": "hr"},
@@ -1156,7 +1186,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
                     "**🔊 硬件 PWM 蜂鸣器状态 (buzzer-api:8001)**\n\n"
                     f"• **通道输出**：`GPIO 18 (PWM0)`\n"
                     f"• **发声状态**：`{'正在发声 🎵 (' + str(buzzer_freq) + ' Hz / ' + str(buzzer_note) + ')' if is_playing else '静音待命 ⏹️'}`\n"
-                    f"• **提示音联动**：`{'🟢 开启中' if self.buzzer_enabled else '⚪ 已停用'}` (音量: `{self.buzzer_volume}%`)\n"
+                    f"• **提示音联动**：`{'🟢 开启中' if self.buzzer_enabled else '⚪ 已停用'}` (音量: `{self.buzzer_volume}%`, 循环: `{self.buzzer_interval}s`)\n"
                     f"• **服务地址**：`{self.buzzer_api_url}`"
                 )
             },
