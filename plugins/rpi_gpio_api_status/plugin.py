@@ -68,7 +68,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
         self.buzzer_api_url = raw_buzzer_url
         self.buzzer_api_token = self.config_data.get("buzzer_api_token", DEFAULT_BUZZER_TOKEN)
         self.buzzer_enabled = self.config_data.get("buzzer_enabled", True)
-        self.buzzer_volume = int(self.config_data.get("buzzer_volume", 25))
+        self.buzzer_volume = int(self.config_data.get("buzzer_volume", 10))
 
         # 自动联动与时长参数
         self.auto_indicator = self.config_data.get("auto_indicator_enabled", True)
@@ -160,6 +160,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
         headers = {"Content-Type": "application/json"}
         if tok:
             headers["X-API-Token"] = tok
+            headers["Authorization"] = f"Bearer {tok}"
         return headers
 
     # ==================== 异步调用网关 ====================
@@ -727,7 +728,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
                 "api_token": DEFAULT_API_TOKEN,
                 "buzzer_api_url": DEFAULT_BUZZER_URL,
                 "buzzer_api_token": DEFAULT_BUZZER_TOKEN,
-                "buzzer_volume": 25
+                "buzzer_volume": 10
             })
             test_res = self.test_gateway_connection()
             snapshot = self._fetch_snapshot_sync()
@@ -761,7 +762,7 @@ class RpiGpioApiStatusPlugin(BasePlugin):
 
         # 11. 调整蜂鸣器音量
         elif act == "set_buzzer_volume":
-            vol = int(value.get("volume", 25))
+            vol = int(value.get("volume", 10))
             self.save_config_file({"buzzer_volume": vol})
             self.play_melody("beep", volume=vol)
             snapshot = self._fetch_snapshot_sync()
@@ -934,9 +935,9 @@ class RpiGpioApiStatusPlugin(BasePlugin):
                     "actions": [
                         {"tag": "button", "text": {"tag": "plain_text", "content": f"LED联动: {'🟢 开启' if self.auto_indicator else '⚪ 停用'}"}, "type": "primary" if self.auto_indicator else "default", "value": {"action": "toggle_auto_indicator"}},
                         {"tag": "button", "text": {"tag": "plain_text", "content": f"提示音: {buzzer_switch_text}"}, "type": "primary" if self.buzzer_enabled else "default", "value": {"action": "toggle_buzzer_enabled"}},
-                        {"tag": "button", "text": {"tag": "plain_text", "content": f"{'✓ ' if self.buzzer_volume == 15 else ''}音量 15%"}, "type": "primary" if self.buzzer_volume == 15 else "default", "value": {"action": "set_buzzer_volume", "volume": 15}},
-                        {"tag": "button", "text": {"tag": "plain_text", "content": f"{'✓ ' if self.buzzer_volume == 25 else ''}音量 25%"}, "type": "primary" if self.buzzer_volume == 25 else "default", "value": {"action": "set_buzzer_volume", "volume": 25}},
-                        {"tag": "button", "text": {"tag": "plain_text", "content": f"{'✓ ' if self.buzzer_volume == 50 else ''}音量 50%"}, "type": "primary" if self.buzzer_volume == 50 else "default", "value": {"action": "set_buzzer_volume", "volume": 50}}
+                        {"tag": "button", "text": {"tag": "plain_text", "content": f"{'✓ ' if self.buzzer_volume == 5 else ''}音量 5%"}, "type": "primary" if self.buzzer_volume == 5 else "default", "value": {"action": "set_buzzer_volume", "volume": 5}},
+                        {"tag": "button", "text": {"tag": "plain_text", "content": f"{'✓ ' if self.buzzer_volume == 10 else ''}音量 10%"}, "type": "primary" if self.buzzer_volume == 10 else "default", "value": {"action": "set_buzzer_volume", "volume": 10}},
+                        {"tag": "button", "text": {"tag": "plain_text", "content": f"{'✓ ' if self.buzzer_volume == 15 else ''}音量 15%"}, "type": "primary" if self.buzzer_volume == 15 else "default", "value": {"action": "set_buzzer_volume", "volume": 15}}
                     ]
                 },
                 {"tag": "hr"},
