@@ -258,12 +258,14 @@ class RpiGpioApiStatusPlugin(BasePlugin):
     # ==================== 循环提示音定时器引擎 ====================
 
     def _stop_recurring_sound(self):
-        """停止当前正在进行的循环提示音计时线程"""
+        """停止当前正在进行的循环提示音计时线程并立即关停蜂鸣器"""
         self.stop_timer_event.set()
         self.current_buzzer_mode = "idle"
+        self.active_timer_thread = None
+        self.stop_buzzer()
 
     def _start_recurring_sound(self, mode: str):
-        """启动或切换指定模式的循环提示音 (thinking: 10s单哔, tool: 10s双哔)"""
+        """启动或切换指定模式的循环提示音 (thinking: 单哔, tool: 双哔)"""
         if not getattr(self, "buzzer_enabled", True) or not getattr(self, "auto_indicator", True):
             return
 
@@ -286,6 +288,10 @@ class RpiGpioApiStatusPlugin(BasePlugin):
             interval = float(getattr(self, "buzzer_interval", 15))
             while not evt.wait(interval):
                 if evt.is_set():
+                    break
+                if self.current_buzzer_mode != m or self.current_buzzer_mode == "idle":
+                    break
+                if not getattr(self, "buzzer_enabled", True) or not getattr(self, "auto_indicator", True):
                     break
                 if m == "thinking":
                     self.play_melody("beep")
@@ -531,6 +537,26 @@ class RpiGpioApiStatusPlugin(BasePlugin):
 
         return ai_response_text
 
+    async def on_task_stop(self, chat_id: str):
+        """当任务被 /stop 叫停、取消或发生致命异常时触发"""
+        log.info(f"[Plugin:{self.plugin_id}] 🛑 监听到任务中止信号 (chat: {chat_id})，立即停止循环提示音、静音并切换红灯告警")
+        self._stop_recurring_sound()
+        self.stop_buzzer()
+        self.set_state_error()
+        self.play_melody("error")
+
+    async def on_message(self, chat_id: str, user_text: str, message_id: str, session_data: dict) -> bool:
+        """前置消息拦截：若用户输入 /stop 时毫秒级停止发声与指示"""
+        txt = (user_text or "").strip().lower()
+        if txt in ["/stop", "/cancel", "叫停任务", "停止"]:
+            log.info(f"[Plugin:{self.plugin_id}] 🛑 前置拦截到中止命令 '{txt}'，快速终止蜂鸣器循环与发声")
+            self._stop_recurring_sound()
+            self.stop_buzzer()
+            self.set_state_error()
+            self.play_melody("error")
+            return False
+        return False
+
     # ==================== 飞书命令处理 (/led, /light, /stat) ====================
 
     async def on_command(self, command: str, args: str, chat_id: str, message_id: str, session_data: dict) -> bool:
@@ -538,6 +564,14 @@ class RpiGpioApiStatusPlugin(BasePlugin):
             return False
 
         cmd_lower = command.lower()
+        if cmd_lower in ["/stop", "/cancel"]:
+            log.info(f"[Plugin:{self.plugin_id}] on_command 捕获到 {cmd_lower}，终止蜂鸣器发声")
+            self._stop_recurring_sound()
+            self.stop_buzzer()
+            self.set_state_error()
+            self.play_melody("error")
+            return False
+
         if cmd_lower not in ["/led", "/light", "/stat"]:
             return False
 
