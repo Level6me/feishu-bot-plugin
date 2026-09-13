@@ -47,6 +47,24 @@ def _is_valid_url(url: str) -> bool:
 
 class RpiGpioApiStatusPlugin(BasePlugin):
 
+    def __init__(self, plugin_dir: str, manifest: dict):
+        super().__init__(plugin_dir, manifest)
+        self.config_data = {}
+        self.api_url = DEFAULT_API_URL
+        self.api_token = DEFAULT_API_TOKEN
+        self.buzzer_api_url = DEFAULT_BUZZER_URL
+        self.buzzer_api_token = DEFAULT_BUZZER_TOKEN
+        self.buzzer_enabled = True
+        self.buzzer_volume = 10
+        self.auto_indicator = True
+        self.success_duration = 300
+        self.current_state = "off"
+        self.last_test_result = None
+        self.pending_input = {}
+        self.active_timer_thread = None
+        self.stop_timer_event = threading.Event()
+        self.current_buzzer_mode = "idle"
+
     def initialize(self):
         self.config_data = self.get_config() or {}
         self.enabled = self.config_data.get("enabled", True)
@@ -1028,9 +1046,43 @@ class RpiGpioApiStatusPlugin(BasePlugin):
         """构建全景系统监控与 GPIO / 蜂鸣器硬件运行状态卡片"""
         sys_metrics = {}
         if buzzer_snapshot and "system" in buzzer_snapshot:
-            sys_metrics = buzzer_snapshot["system"]
+            sys_metrics = dict(buzzer_snapshot["system"])
         elif snapshot and "system" in snapshot:
-            sys_metrics = snapshot["system"]
+            sys_metrics = dict(snapshot["system"])
+
+        # 本地底层指标后备保底 (若 API 网关暂未返回或不可达)
+        if not sys_metrics.get("temperature"):
+            try:
+                if os.path.exists('/sys/class/thermal/thermal_zone0/temp'):
+                    with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
+                        sys_metrics['temperature'] = round(int(f.read().strip()) / 1000.0, 1)
+            except Exception:
+                pass
+        if not sys_metrics.get("load_avg") or sys_metrics.get("load_avg") == [0.0, 0.0, 0.0]:
+            try:
+                sys_metrics['load_avg'] = [round(x, 2) for x in os.getloadavg()]
+            except Exception:
+                pass
+        if not sys_metrics.get("memory_total_mb"):
+            try:
+                with open('/proc/meminfo', 'r') as f:
+                    mem_dict = {}
+                    for line in f:
+                        parts = line.split(':')
+                        if len(parts) == 2:
+                            mem_dict[parts[0].strip()] = int(parts[1].split()[0].strip())
+                    total_kb = mem_dict.get('MemTotal', 0)
+                    avail_kb = mem_dict.get('MemAvailable', 0)
+                    sys_metrics['memory_total_mb'] = int(total_kb / 1024)
+                    sys_metrics['memory_used_mb'] = int((total_kb - avail_kb) / 1024)
+            except Exception:
+                pass
+        if not sys_metrics.get("uptime_hours"):
+            try:
+                with open('/proc/uptime', 'r') as f:
+                    sys_metrics['uptime_hours'] = round(float(f.read().split()[0]) / 3600.0, 1)
+            except Exception:
+                pass
 
         # CPU 温度
         temp = sys_metrics.get("temperature", 0.0)
