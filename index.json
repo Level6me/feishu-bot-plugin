@@ -62,5 +62,14 @@
     "version": "2.0.0",
     "repo_url": "https://github.com/Level6me/feishu-bot-plugin",
     "description": "检查并拉取 Git 云端最新代码版本，一键自动构建热重启机器人引擎"
+  },
+  {
+    "id": "passport_bridge",
+    "name": "📟 FoloToy AI Passport 硬件随身对讲与看板网关",
+    "author": "Antigravity",
+    "version": "1.0.0",
+    "repo_url": "https://github.com/Level6me/feishu-bot-plugin",
+    "description": "提供局域网全双工 WebSocket、UDP 服务自发现、双向语音对讲、声屏状态看板与飞书卡片联动中继"
   }
 ]
+
