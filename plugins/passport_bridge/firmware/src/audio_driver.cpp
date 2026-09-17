@@ -5,7 +5,7 @@ AudioDriver audio;
 AudioDriver::AudioDriver() {}
 
 bool AudioDriver::init() {
-    Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, 100000);
+    Wire.begin(BSP_I2C_SDA, BSP_I2C_SCL, 100000);
     delay(50);
     
     if (!initES8311()) {
@@ -24,14 +24,14 @@ bool AudioDriver::init() {
 }
 
 void AudioDriver::writeReg(uint8_t reg, uint8_t val) {
-    Wire.beginTransmission(ES8311_I2C_ADDR);
+    Wire.beginTransmission(BSP_I2C_ES8311_ADDR);
     Wire.write(reg);
     Wire.write(val);
     Wire.endTransmission();
 }
 
 uint8_t AudioDriver::readReg(uint8_t reg) {
-    Wire.beginTransmission(ES8311_I2C_ADDR);
+    Wire.beginTransmission(BSP_I2C_ES8311_ADDR);
     Wire.write(reg);
     Wire.endTransmission();
     Wire.requestFrom(ES8311_I2C_ADDR, 1);
@@ -102,10 +102,11 @@ bool AudioDriver::initI2S() {
     };
 
     i2s_pin_config_t pin_config = {
-        .bck_io_num = PIN_I2S_BCLK,
-        .ws_io_num = PIN_I2S_WS,
-        .data_out_num = PIN_I2S_DOUT,
-        .data_in_num = PIN_I2S_DIN
+        .mck_io_num = BSP_I2S_MCLK,
+        .bck_io_num = BSP_I2S_BCLK,
+        .ws_io_num = BSP_I2S_WS,
+        .data_out_num = BSP_I2S_DOUT,
+        .data_in_num = BSP_I2S_DIN
     };
 
     esp_err_t err = i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL);

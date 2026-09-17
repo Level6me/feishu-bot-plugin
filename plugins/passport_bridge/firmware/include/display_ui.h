@@ -30,27 +30,27 @@ public:
             cfg.spi_3wire = true;
             cfg.use_lock = true;
             cfg.dma_channel = SPI_DMA_CH_AUTO;
-            cfg.pin_sclk = PIN_LCD_SCLK;
-            cfg.pin_mosi = PIN_LCD_MOSI;
+            cfg.pin_sclk = BSP_LCD_SCLK;
+            cfg.pin_mosi = BSP_LCD_MOSI;
             cfg.pin_miso = -1;
-            cfg.pin_dc   = PIN_LCD_DC;
+            cfg.pin_dc   = BSP_LCD_DC;
             _bus_instance.config(cfg);
             _panel_instance.setBus(&_bus_instance);
         }
         {
             auto cfg = _panel_instance.config();
-            cfg.pin_cs           = PIN_LCD_CS;
-            cfg.pin_rst          = PIN_LCD_RST;
+            cfg.pin_cs           = BSP_LCD_CS;
+            cfg.pin_rst          = BSP_LCD_RST;
             cfg.pin_busy         = -1;
-            cfg.panel_width      = 240;
-            cfg.panel_height     = 320;
+            cfg.panel_width      = BSP_LCD_W;
+            cfg.panel_height     = BSP_LCD_H;
             cfg.offset_x         = 0;
             cfg.offset_y         = 0;
             cfg.offset_rotation  = 0;
             cfg.dummy_read_pixel = 8;
             cfg.dummy_read_bits  = 1;
             cfg.readable         = false;
-            cfg.invert           = true;
+            cfg.invert           = (BSP_LCD_INVERT_COLOR == 1);
             cfg.rgb_order        = false;
             cfg.dlen_16bit       = false;
             cfg.bus_shared       = false;
@@ -58,7 +58,7 @@ public:
         }
         {
             auto cfg = _light_instance.config();
-            cfg.pin_bl = PIN_LCD_BL;
+            cfg.pin_bl = BSP_LCD_BL;
             cfg.invert = false;
             cfg.freq   = 44100;
             cfg.pwm_channel = 7;
