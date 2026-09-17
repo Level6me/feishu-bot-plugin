@@ -27,6 +27,81 @@ TTS_VOICE_LIST = [
     ("zh-CN-XiaoyiNeural", "👩 晓伊 (温和女声)")
 ]
 
+MACRO_PRESETS = {
+    "ok_double_click": {
+        "checkin": {
+            "action": "feishu_checkin",
+            "description": "飞书工作台状态极速打卡",
+            "notify_feishu": True
+        },
+        "todo": {
+            "action": "bitable_capture",
+            "description": "多维表格待办闪念录入",
+            "notify_feishu": True
+        },
+        "pomodoro": {
+            "action": "start_pomodoro",
+            "description": "启动 25 分钟专注番茄钟",
+            "notify_feishu": True
+        },
+        "broadcast": {
+            "action": "station_broadcast",
+            "description": "向局域网广播工位状态",
+            "notify_feishu": True
+        }
+    },
+    "up_double_click": {
+        "git": {
+            "action": "git_status_check",
+            "description": "当前工程 Git 状态巡检",
+            "command": "git branch --show-current && git status -s && git log -1 --oneline",
+            "notify_feishu": True
+        },
+        "sys": {
+            "action": "custom_script",
+            "description": "主机资源与系统负载巡检",
+            "command": "uptime && free -h && df -h /",
+            "notify_feishu": True
+        },
+        "net": {
+            "action": "custom_script",
+            "description": "网络连通与外网延迟诊断",
+            "command": "ping -c 3 223.5.5.5 | tail -2",
+            "notify_feishu": True
+        },
+        "clock": {
+            "action": "flip_clock_sync",
+            "description": "同步气象并切换翻页时钟",
+            "notify_feishu": False
+        }
+    },
+    "down_double_click": {
+        "guard": {
+            "action": "custom_script",
+            "description": "工位安全防窥 / 锁屏守护",
+            "command": "echo '工位防窥安全守护已激活' && date",
+            "notify_feishu": True
+        },
+        "stop": {
+            "action": "emergency_stop",
+            "description": "紧急物理熔断后台任务",
+            "notify_feishu": True
+        },
+        "test": {
+            "action": "custom_script",
+            "description": "工程自动化快速单元测试",
+            "command": "python3 -m unittest discover tests -v 2>&1 | tail -10 || echo '测试用例就绪'",
+            "notify_feishu": True
+        },
+        "clean": {
+            "action": "custom_script",
+            "description": "清理工程构建与临时缓存",
+            "command": "find . -name '__pycache__' -exec rm -rf {} + 2>/dev/null && echo 'Python 缓存清理完毕'",
+            "notify_feishu": True
+        }
+    }
+}
+
 
 class PassportBridgePlugin(BasePlugin):
 
@@ -290,11 +365,22 @@ class PassportBridgePlugin(BasePlugin):
             elements.append({"tag": "hr"})
 
             # --- 模块 4: 物理按键宏与工作流 ---
+            macro_cfg = cfg.get("macro_bindings", {})
+            ok_info = macro_cfg.get("ok_double_click", {})
+            up_info = macro_cfg.get("up_double_click", {})
+            down_info = macro_cfg.get("down_double_click", {})
+            ok_name = ok_info.get("description", "飞书工作台状态打卡")
+            up_name = up_info.get("description", "当前工程 Git 巡检")
+            down_name = down_info.get("description", "工位安全防窥 / 自定义")
+
             elements.append({
                 "tag": "markdown",
                 "content": (
-                    "**⚡ 物理动作宏工作流 (Physical Action Engine)**\n"
-                    "*实体键 350ms 双击触发极速打卡与 Git 巡检；支持扩展自定义脚本。*"
+                    f"**⚡ 物理动作宏工作流 (Physical Action Engine)**\n"
+                    f"• 🔘 **OK 双击**：`{ok_name}`\n"
+                    f"• 🔼 **Up 双击**：`{up_name}`\n"
+                    f"• 🔽 **Down 双击**：`{down_name}`\n"
+                    f"*点击右侧按钮直接在飞书中为每个实体按键选择与绑定预设！*"
                 )
             })
             elements.append({
@@ -302,21 +388,27 @@ class PassportBridgePlugin(BasePlugin):
                 "actions": [
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "📍 快捷打卡签到"},
+                        "text": {"tag": "plain_text", "content": "📍 运行 OK 宏"},
                         "type": "primary",
                         "value": {"action": "trigger_macro_checkin", "chat_id": chat_id}
                     },
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🔍 仓库 Git 巡检"},
+                        "text": {"tag": "plain_text", "content": "🔍 运行 Up 宏"},
                         "type": "default",
                         "value": {"action": "trigger_macro_git", "chat_id": chat_id}
                     },
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🛡️ 工位安全防窥"},
+                        "text": {"tag": "plain_text", "content": "🛡️ 运行 Down 宏"},
                         "type": "default",
                         "value": {"action": "trigger_macro_down", "chat_id": chat_id}
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "⚙️ 配置按键宏"},
+                        "type": "default",
+                        "value": {"action": "switch_view", "view": "macro", "chat_id": chat_id}
                     }
                 ]
             })
@@ -360,58 +452,228 @@ class PassportBridgePlugin(BasePlugin):
                 ]
             })
 
-        # 4. 视图：物理按键动作宏专属配置面板
+        # 4. 视图：物理按键动作宏专属交互配置面板
         elif view_mode == "macro":
+            macro_cfg = cfg.get("macro_bindings", {})
+            ok_binding = macro_cfg.get("ok_double_click", {})
+            up_binding = macro_cfg.get("up_double_click", {})
+            down_binding = macro_cfg.get("down_double_click", {})
+
+            ok_desc = ok_binding.get("description", "飞书工作台状态签到")
+            ok_cmd = ok_binding.get("command", "")
+            ok_notify = ok_binding.get("notify_feishu", True)
+            ok_act = ok_binding.get("action", "feishu_checkin")
+
+            up_desc = up_binding.get("description", "当前工程 Git 状态巡检")
+            up_cmd = up_binding.get("command", "")
+            up_notify = up_binding.get("notify_feishu", True)
+            up_act = up_binding.get("action", "git_status_check")
+
+            down_desc = down_binding.get("description", "工位安全防窥 / 自定义动作")
+            down_cmd = down_binding.get("command", "")
+            down_notify = down_binding.get("notify_feishu", True)
+            down_act = down_binding.get("action", "custom_script")
+
             elements.append({
                 "tag": "markdown",
                 "content": (
-                    "### ⚡ FoloToy AI Passport 物理按键宏引擎\n\n"
-                    "硬件端内置 **350ms 双击事件识别状态机**，支持实体按键触发飞书协同与本地自动化：\n\n"
-                    "| 物理按键 | 单击动作 | 长按动作 (1.5s) | **双击快捷动作宏 (350ms)** |\n"
-                    "| :--- | :--- | :--- | :--- |\n"
-                    "| 🔘 **OK 键** | 唤醒屏幕 / 刷新 | PTT 语音对讲与灵感录入 | 📍 **飞书工作台状态极速打卡** |\n"
-                    "| 🔼 **Up 键** | 看板上一页 | 开启 SoftAP 配网热点 | 🔍 **代码库分支与 Git 状态巡检** |\n"
-                    "| 🔽 **Down 键** | 看板下一页 | 紧急物理安全熔断 | 🛡️ **工位安全防窥 / 自定义脚本** |\n\n"
-                    "**🛠️ 自定义宏配置接口 (`config.json`)**：\n"
-                    "可在配置文件中任意绑定自动化命令或脚本，例如：\n"
-                    "```json\n"
-                    "\"macro_bindings\": {\n"
-                    "  \"down_double_click\": {\n"
-                    "    \"action\": \"custom_script\",\n"
-                    "    \"description\": \"工位防窥与安全锁屏\",\n"
-                    "    \"command\": \"echo 'Screen Guard Triggered'\",\n"
-                    "    \"notify_feishu\": true\n"
-                    "  }\n"
-                    "}\n"
-                    "```"
+                    "### ⚡ FoloToy AI Passport 物理动作宏可视化配置\n"
+                    "无需手动修改配置文件，**点击下方预设按钮即可秒级切换实体按键绑定与通知**："
                 )
             })
             elements.append({"tag": "hr"})
+
+            # --- 1. OK 确定键配置区 ---
+            elements.append({
+                "tag": "markdown",
+                "content": (
+                    f"**🔘 [OK 确定键] 双击宏配置**\n"
+                    f"• 当前生效：**`{ok_desc}`**\n"
+                    f"• 执行行为：`{ok_cmd if ok_cmd else ('内置: ' + ok_act)}`\n"
+                    f"• 飞书通知：`{'🔔 开启卡片推送' if ok_notify else '🔕 静默模式 (无卡片)'}`\n"
+                    f"*点击预设一键绑定*："
+                )
+            })
             elements.append({
                 "tag": "action",
                 "actions": [
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "📍 测试打卡宏"},
+                        "text": {"tag": "plain_text", "content": ("📍 签到打卡" + (" (当前)" if "签到" in ok_desc else ""))},
+                        "type": "primary" if "签到" in ok_desc else "default",
+                        "value": {"action": "set_macro", "key": "ok_double_click", "preset": "checkin", "view": "macro", "chat_id": chat_id}
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": ("📝 灵感待办" + (" (当前)" if "待办" in ok_desc or "闪念" in ok_desc else ""))},
+                        "type": "primary" if ("待办" in ok_desc or "闪念" in ok_desc) else "default",
+                        "value": {"action": "set_macro", "key": "ok_double_click", "preset": "todo", "view": "macro", "chat_id": chat_id}
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": ("⏱️ 番茄计时" + (" (当前)" if "番茄" in ok_desc else ""))},
+                        "type": "primary" if "番茄" in ok_desc else "default",
+                        "value": {"action": "set_macro", "key": "ok_double_click", "preset": "pomodoro", "view": "macro", "chat_id": chat_id}
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": ("📢 工位广播" + (" (当前)" if "广播" in ok_desc else ""))},
+                        "type": "primary" if "广播" in ok_desc else "default",
+                        "value": {"action": "set_macro", "key": "ok_double_click", "preset": "broadcast", "view": "macro", "chat_id": chat_id}
+                    }
+                ]
+            })
+            elements.append({
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "🔕 关闭通知" if ok_notify else "🔔 开启通知"},
+                        "type": "default",
+                        "value": {"action": "toggle_macro_notify", "key": "ok_double_click", "view": "macro", "chat_id": chat_id}
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "▶️ 立即测试 OK 宏"},
                         "type": "primary",
-                        "value": {"action": "trigger_macro_checkin", "chat_id": chat_id, "view": "macro"}
+                        "value": {"action": "trigger_macro_checkin", "view": "macro", "chat_id": chat_id}
+                    }
+                ]
+            })
+            elements.append({"tag": "hr"})
+
+            # --- 2. Up 上翻键配置区 ---
+            elements.append({
+                "tag": "markdown",
+                "content": (
+                    f"**🔼 [Up 上翻键] 双击宏配置**\n"
+                    f"• 当前生效：**`{up_desc}`**\n"
+                    f"• 执行命令：`{up_cmd if up_cmd else ('内置: ' + up_act)}`\n"
+                    f"• 飞书通知：`{'🔔 开启卡片推送' if up_notify else '🔕 静默模式 (无卡片)'}`\n"
+                    f"*点击预设一键绑定*："
+                )
+            })
+            elements.append({
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": ("🔍 Git 巡检" + (" (当前)" if "Git" in up_desc else ""))},
+                        "type": "primary" if "Git" in up_desc else "default",
+                        "value": {"action": "set_macro", "key": "up_double_click", "preset": "git", "view": "macro", "chat_id": chat_id}
                     },
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🔍 测试 Git 巡检宏"},
-                        "type": "default",
-                        "value": {"action": "trigger_macro_git", "chat_id": chat_id, "view": "macro"}
+                        "text": {"tag": "plain_text", "content": ("📊 系统负载" + (" (当前)" if "负载" in up_desc else ""))},
+                        "type": "primary" if "负载" in up_desc else "default",
+                        "value": {"action": "set_macro", "key": "up_double_click", "preset": "sys", "view": "macro", "chat_id": chat_id}
                     },
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🛡️ 测试防窥安全宏"},
+                        "text": {"tag": "plain_text", "content": ("🌐 网络诊断" + (" (当前)" if "网络" in up_desc else ""))},
+                        "type": "primary" if "网络" in up_desc else "default",
+                        "value": {"action": "set_macro", "key": "up_double_click", "preset": "net", "view": "macro", "chat_id": chat_id}
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": ("⛅ 翻页时钟" + (" (当前)" if "时钟" in up_desc else ""))},
+                        "type": "primary" if "时钟" in up_desc else "default",
+                        "value": {"action": "set_macro", "key": "up_double_click", "preset": "clock", "view": "macro", "chat_id": chat_id}
+                    }
+                ]
+            })
+            elements.append({
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "🔕 关闭通知" if up_notify else "🔔 开启通知"},
                         "type": "default",
-                        "value": {"action": "trigger_macro_down", "chat_id": chat_id, "view": "macro"}
+                        "value": {"action": "toggle_macro_notify", "key": "up_double_click", "view": "macro", "chat_id": chat_id}
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "▶️ 立即测试 Up 宏"},
+                        "type": "primary",
+                        "value": {"action": "trigger_macro_git", "view": "macro", "chat_id": chat_id}
+                    }
+                ]
+            })
+            elements.append({"tag": "hr"})
+
+            # --- 3. Down 下翻键配置区 ---
+            elements.append({
+                "tag": "markdown",
+                "content": (
+                    f"**🔽 [Down 下翻键] 双击宏配置**\n"
+                    f"• 当前生效：**`{down_desc}`**\n"
+                    f"• 执行命令：`{down_cmd if down_cmd else ('内置: ' + down_act)}`\n"
+                    f"• 飞书通知：`{'🔔 开启卡片推送' if down_notify else '🔕 静默模式 (无卡片)'}`\n"
+                    f"*点击预设一键绑定*："
+                )
+            })
+            elements.append({
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": ("🛡️ 安全防窥" + (" (当前)" if "防窥" in down_desc else ""))},
+                        "type": "primary" if "防窥" in down_desc else "default",
+                        "value": {"action": "set_macro", "key": "down_double_click", "preset": "guard", "view": "macro", "chat_id": chat_id}
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": ("🛑 紧急熔断" + (" (当前)" if "熔断" in down_desc else ""))},
+                        "type": "primary" if "熔断" in down_desc else "default",
+                        "value": {"action": "set_macro", "key": "down_double_click", "preset": "stop", "view": "macro", "chat_id": chat_id}
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": ("🧪 快速单测" + (" (当前)" if "单测" in down_desc or "测试" in down_desc else ""))},
+                        "type": "primary" if ("单测" in down_desc or "测试" in down_desc) else "default",
+                        "value": {"action": "set_macro", "key": "down_double_click", "preset": "test", "view": "macro", "chat_id": chat_id}
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": ("🧹 缓存清理" + (" (当前)" if "清理" in down_desc or "缓存" in down_desc else ""))},
+                        "type": "primary" if ("清理" in down_desc or "缓存" in down_desc) else "default",
+                        "value": {"action": "set_macro", "key": "down_double_click", "preset": "clean", "view": "macro", "chat_id": chat_id}
+                    }
+                ]
+            })
+            elements.append({
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "🔕 关闭通知" if down_notify else "🔔 开启通知"},
+                        "type": "default",
+                        "value": {"action": "toggle_macro_notify", "key": "down_double_click", "view": "macro", "chat_id": chat_id}
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "▶️ 立即测试 Down 宏"},
+                        "type": "primary",
+                        "value": {"action": "trigger_macro_down", "view": "macro", "chat_id": chat_id}
+                    }
+                ]
+            })
+            elements.append({"tag": "hr"})
+
+            # --- 4. 底部重置与导航 ---
+            elements.append({
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "🔄 全部恢复出厂默认宏"},
+                        "type": "danger",
+                        "value": {"action": "reset_macros", "view": "macro", "chat_id": chat_id}
                     },
                     {
                         "tag": "button",
                         "text": {"tag": "plain_text", "content": "⬅️ 返回综合控制台"},
-                        "type": "default",
+                        "type": "primary",
                         "value": {"action": "switch_view", "view": "control", "chat_id": chat_id}
                     }
                 ]
@@ -677,6 +939,46 @@ class PassportBridgePlugin(BasePlugin):
                 banner = "🛠️ 已切换至固件开发与刷机烧录指引"
             else:
                 banner = "🎛️ 已返回硬件综合协同控制台"
+
+        # 19. 动作宏设置：一键切换预设
+        elif act == "set_macro":
+            key = value.get("key")
+            preset = value.get("preset")
+            key_names = {"ok_double_click": "OK 确定键", "up_double_click": "Up 上翻键", "down_double_click": "Down 下翻键"}
+            if key in MACRO_PRESETS and preset in MACRO_PRESETS[key]:
+                cfg = self.get_config()
+                if "macro_bindings" not in cfg:
+                    cfg["macro_bindings"] = {}
+                preset_conf = MACRO_PRESETS[key][preset].copy()
+                cfg["macro_bindings"][key] = preset_conf
+                self.save_config(cfg)
+                banner = f"✅ 已成功将【{key_names.get(key, key)}】配置为：**{preset_conf['description']}**！"
+
+        # 20. 动作宏设置：切换飞书卡片通知
+        elif act == "toggle_macro_notify":
+            key = value.get("key")
+            key_names = {"ok_double_click": "OK 确定键", "up_double_click": "Up 上翻键", "down_double_click": "Down 下翻键"}
+            cfg = self.get_config()
+            if "macro_bindings" not in cfg:
+                cfg["macro_bindings"] = {}
+            if key not in cfg["macro_bindings"]:
+                cfg["macro_bindings"][key] = {}
+            curr_notify = cfg["macro_bindings"][key].get("notify_feishu", True)
+            new_notify = not curr_notify
+            cfg["macro_bindings"][key]["notify_feishu"] = new_notify
+            self.save_config(cfg)
+            banner = f"🔔 【{key_names.get(key, key)}】的飞书卡片推送已切换为：**{'开启' if new_notify else '关闭'}**！"
+
+        # 21. 动作宏设置：全部恢复出厂默认宏
+        elif act == "reset_macros":
+            cfg = self.get_config()
+            cfg["macro_bindings"] = {
+                "ok_double_click": MACRO_PRESETS["ok_double_click"]["checkin"].copy(),
+                "up_double_click": MACRO_PRESETS["up_double_click"]["git"].copy(),
+                "down_double_click": MACRO_PRESETS["down_double_click"]["guard"].copy()
+            }
+            self.save_config(cfg)
+            banner = "🔄 三大实体按键动作宏已全部恢复为出厂默认预设！"
 
         # 生成新卡片并在飞书内就地局部更新 (Patch)
         new_card = self.build_control_card(chat_id, view_mode=view_mode, banner=banner)
