@@ -81,6 +81,7 @@ void NetworkWS::onWsEvent(WStype_t type, uint8_t * payload, size_t length) {
             wsConnected = true;
             log_i("[WS] Connected to %s", (char*)payload);
             ui.setState(UI_STATE_DASHBOARD);
+            audio.playTone(TONE_CONNECTED);
             
             // 发送登记握手包
             {
@@ -150,6 +151,7 @@ void NetworkWS::handleTextMessage(const char* jsonText) {
         const char* title = doc["title"] | "通知";
         const char* content = doc["content"] | "";
         const char* level = doc["level"] | "warning";
+        audio.playTone(TONE_ALERT);
         ui.showAlert(String(title), String(content), String(level));
     }
 }

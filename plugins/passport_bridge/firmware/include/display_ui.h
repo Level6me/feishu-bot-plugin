@@ -2,7 +2,9 @@
 #include <Arduino.h>
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
+#include <WiFi.h>
 #include "config.h"
+#include "battery_gauge.h"
 
 enum UiState {
     UI_STATE_BOOT,
@@ -74,11 +76,15 @@ public:
     DisplayUI();
     void init();
     void setState(UiState state);
+    UiState getState() const { return currentState; }
     void updateDashboard(const String& project, const String& time_str, int clients, const String& status);
     void setThinkingText(const String& text);
     void setSpeakingText(const String& text);
     void showAlert(const String& title, const String& content, const String& level = "warning");
     void drawWaveform(int level);
+    void nextDashboardPage();
+    void prevDashboardPage();
+    void notifyActivity();
     void loop();
 
 private:
@@ -91,16 +97,27 @@ private:
     String alertTitle;
     String alertContent;
     String alertLevel;
+    
+    int dashboardPage;       // 0: 主看板, 1: 硬件诊断, 2: 飞书消息流
     unsigned long alertStartTime;
     unsigned long lastAnimTime;
+    unsigned long lastActivityTime;
+    uint8_t currentBrightness;
+    uint8_t targetBrightness;
     int animFrame;
 
+    void renderStatusBar();
     void renderConnecting();
     void renderDashboard();
+    void renderDashboardPage0(); // 飞书协同看板
+    void renderDashboardPage1(); // 硬件诊断与电量
+    void renderDashboardPage2(); // 飞书通知详情
     void renderListening();
     void renderThinking();
     void renderSpeaking();
     void renderAlert();
+    void renderAvatarFace(int cx, int cy, const char* mood);
+    void updateBacklight();
 };
 
 extern DisplayUI ui;
