@@ -4,6 +4,7 @@
 #include "audio_driver.h"
 #include "network_ws.h"
 #include "battery_gauge.h"
+#include "wifi_manager.h"
 
 // 官方单一 ADC 引脚电阻分压按键定义
 enum KeyType {
@@ -65,7 +66,38 @@ void handleAdcButtons() {
         ui.notifyActivity();
     }
 
-    // 按键状态转移机
+    // 1. 语音随时打断 (Barge-in): 若 AI 正在讲话播报，按下任意键立即发送打断
+    if (rawKey != KEY_NONE && ui.getState() == UI_STATE_SPEAKING) {
+        net.sendInterrupt();
+        if (rawKey == KEY_DOWN) {
+            ui.setState(UI_STATE_DASHBOARD);
+            return;
+        }
+    }
+
+    // 2. 物理 2FA 高危确认分支响应
+    if (ui.getState() == UI_STATE_CONFIRM_2FA) {
+        if (rawKey != KEY_NONE && keyTracker.currentKey == KEY_NONE) {
+            keyTracker.currentKey = rawKey;
+        } else if (rawKey == KEY_NONE && keyTracker.currentKey != KEY_NONE) {
+            KeyType released = keyTracker.currentKey;
+            keyTracker.currentKey = KEY_NONE;
+            if (released == KEY_UP) {
+                // 上键：物理批准
+                net.send2FAResponse(ui.get2FAActionId(), "approved");
+                audio.playTone(TONE_CONNECTED);
+                ui.showAlert("2FA 鉴权通过", "高危操作已批准执行", "info");
+            } else if (released == KEY_DOWN) {
+                // 下键：物理拦截
+                net.send2FAResponse(ui.get2FAActionId(), "rejected");
+                audio.playTone(TONE_ALERT);
+                ui.showAlert("2FA 鉴权拦截", "高危操作已被物理拒绝", "danger");
+            }
+        }
+        return;
+    }
+
+    // 3. 常规按键状态转移机
     if (rawKey != KEY_NONE && keyTracker.currentKey == KEY_NONE) {
         // 新按下瞬间
         keyTracker.currentKey = rawKey;
@@ -77,16 +109,24 @@ void handleAdcButtons() {
         if (!keyTracker.longPressTriggered && (now - keyTracker.pressStartTime >= LONG_PRESS_MS)) {
             keyTracker.longPressTriggered = true;
             if (rawKey == KEY_OK) {
-                // 确定键长按：播放提示音并启动语音对讲录音 (PTT)
+                // 确定键长按：启动语音对讲录音 (PTT)
                 audio.playTone(TONE_PTT_START);
                 isRecording = true;
                 net.sendVoiceStart();
                 ui.setState(UI_STATE_LISTENING);
             } else if (rawKey == KEY_UP) {
-                net.sendButtonEvent("up", "long_press");
+                // 上键长按：启动 SoftAP Web 配网模式
+                audio.playTone(TONE_ALERT);
+                wifiMgr.startConfigPortal();
             } else if (rawKey == KEY_DOWN) {
-                // 下键长按：紧急物理安全熔断
-                net.sendButtonEvent("down", "long_press");
+                if (ui.getState() == UI_STATE_DASHBOARD && ui.getDashboardPage() == 3) {
+                    // 番茄钟长按下键：重置倒计时
+                    ui.resetPomodoro();
+                    audio.playTone(TONE_ALERT);
+                } else {
+                    // 下键长按：紧急物理安全熔断
+                    net.sendButtonEvent("down", "long_press");
+                }
             }
         }
     }
@@ -96,14 +136,14 @@ void handleAdcButtons() {
         keyTracker.currentKey = KEY_NONE;
 
         if (releasedKey == KEY_OK && isRecording) {
-            // 确定键松开：播放轻柔截止音，提交飞书 Agent
+            // 确定键松开：结束对讲，提交飞书 Agent
             audio.playTone(TONE_PTT_END);
             isRecording = false;
             net.sendVoiceEnd();
             ui.setState(UI_STATE_THINKING);
             ui.setThinkingText("发送给飞书 Agent...");
         } else if (!keyTracker.longPressTriggered) {
-            // 短按事件派发与本地多页看板导航
+            // 短按事件派发与本地导航
             if (releasedKey == KEY_UP) {
                 if (ui.getState() == UI_STATE_DASHBOARD) {
                     ui.prevDashboardPage();
@@ -115,7 +155,12 @@ void handleAdcButtons() {
                 }
                 net.sendButtonEvent("down", "short_press");
             } else if (releasedKey == KEY_OK) {
-                net.sendButtonEvent("ok", "short_press");
+                if (ui.getState() == UI_STATE_DASHBOARD && ui.getDashboardPage() == 3) {
+                    // 番茄钟短按：启动/暂停倒计时
+                    ui.togglePomodoro();
+                } else {
+                    net.sendButtonEvent("ok", "short_press");
+                }
             }
         }
     }
@@ -131,22 +176,22 @@ void setup() {
 
     // 1. 初始化官方 ADC 单引脚电阻分压按键 (GPIO0)
     analogSetAttenuation(ADC_11db);
-    pinMode(BSP_BTN_ADC_PIN, INPUT); // 外部已板载 10k 上拉电阻，不使用内部上拉
+    pinMode(BSP_BTN_ADC_PIN, INPUT);
 
     // 2. 初始化 240x320 ST7789P3 LCD 显示屏与背光
     ui.init();
 
-    // 3. 初始化 ES8311 音频编解码芯片与 I2S 总线 (并启动共享 I2C)
+    // 3. 初始化 ES8311 音频编解码芯片与 I2S 总线
     if (!audio.init()) {
         log_e("Audio hardware initialization failed!");
     }
 
-    // 4. 初始化 CW2017 电池电量计 (挂载在同一 I2C 总线 0x63)
+    // 4. 初始化 CW2017 电池电量计
     if (!battery.init()) {
         log_w("CW2017 battery gauge not found, running with default battery metrics.");
     }
 
-    // 5. 初始化局域网通信 (Wi-Fi + UDP 发现)
+    // 5. 初始化网络 (NVS 凭证优先 + SoftAP 配网 + UDP 自动发现)
     net.init();
 }
 
@@ -154,7 +199,7 @@ void loop() {
     // 1. 扫描与处理电阻分压按键事件
     handleAdcButtons();
 
-    // 2. 录音对讲推流：按住确定键期间，流式读取 I2S PCM 并推送至 WebSocket
+    // 2. 录音对讲推流
     if (isRecording) {
         size_t samples = audio.readRecordData(micPcmBuffer, 256);
         if (samples > 0) {
@@ -166,20 +211,19 @@ void loop() {
             int waveLevel = map(constrain(energy, 100, 3000), 100, 3000, 10, 100);
             ui.drawWaveform(waveLevel);
 
-            // 发送 PCM 二进制帧 (16kHz 16bit mono)
             net.sendAudioChunk((const uint8_t*)micPcmBuffer, samples * sizeof(int16_t));
         }
     }
 
-    // 3. 周期性轮询外设与网络
+    // 3. 周期性轮询
     battery.loop();
     ui.loop();
     net.loop();
 
-    // 4. 低电量保护警报提示
+    // 4. 低电量保护警报
     if (battery.isCriticalBattery()) {
         unsigned long now = millis();
-        if (now - lastLowBatWarning > 60000) { // 每分钟提示一次
+        if (now - lastLowBatWarning > 60000) {
             lastLowBatWarning = now;
             audio.playTone(TONE_ALERT);
             ui.showAlert("低电量警报", "电池电量不足 5%，请及时连接 USB 充电！", "danger");

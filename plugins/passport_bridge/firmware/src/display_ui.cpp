@@ -11,13 +11,20 @@ DisplayUI::DisplayUI()
       alertTitle(""),
       alertContent(""),
       alertLevel("info"),
+      twoFAActionId(""),
+      twoFATitle(""),
+      twoFADetails(""),
+      pomodoroRunning(false),
+      pomodoroRemainingSec(25 * 60),
+      lastPomodoroTick(0),
       dashboardPage(0),
       alertStartTime(0),
       lastAnimTime(0),
       lastActivityTime(0),
       currentBrightness(200),
       targetBrightness(200),
-      animFrame(0) {}
+      animFrame(0),
+      otaPercent(0) {}
 
 void DisplayUI::init() {
     lcd.init();
@@ -35,7 +42,7 @@ void DisplayUI::notifyActivity() {
 
 void DisplayUI::nextDashboardPage() {
     notifyActivity();
-    dashboardPage = (dashboardPage + 1) % 3;
+    dashboardPage = (dashboardPage + 1) % 4;
     if (currentState == UI_STATE_DASHBOARD) {
         renderDashboard();
     }
@@ -43,8 +50,26 @@ void DisplayUI::nextDashboardPage() {
 
 void DisplayUI::prevDashboardPage() {
     notifyActivity();
-    dashboardPage = (dashboardPage + 2) % 3;
+    dashboardPage = (dashboardPage + 3) % 4;
     if (currentState == UI_STATE_DASHBOARD) {
+        renderDashboard();
+    }
+}
+
+void DisplayUI::togglePomodoro() {
+    notifyActivity();
+    pomodoroRunning = !pomodoroRunning;
+    lastPomodoroTick = millis();
+    if (currentState == UI_STATE_DASHBOARD && dashboardPage == 3) {
+        renderDashboard();
+    }
+}
+
+void DisplayUI::resetPomodoro() {
+    notifyActivity();
+    pomodoroRunning = false;
+    pomodoroRemainingSec = 25 * 60;
+    if (currentState == UI_STATE_DASHBOARD && dashboardPage == 3) {
         renderDashboard();
     }
 }
@@ -62,6 +87,8 @@ void DisplayUI::setState(UiState state) {
         case UI_STATE_THINKING:   renderThinking();   break;
         case UI_STATE_SPEAKING:   renderSpeaking();   break;
         case UI_STATE_ALERT:      renderAlert();      break;
+        case UI_STATE_CONFIRM_2FA: render2FA();       break;
+        case UI_STATE_OTA:        renderOTA();        break;
         default: break;
     }
 }
@@ -100,23 +127,41 @@ void DisplayUI::showAlert(const String& title, const String& content, const Stri
     setState(UI_STATE_ALERT);
 }
 
-// 顶部全功能状态栏：包含飞书在线标志、时钟、Wi-Fi 信号格以及 CW2017 电池电量计
+void DisplayUI::show2FA(const String& actionId, const String& title, const String& details) {
+    notifyActivity();
+    twoFAActionId = actionId;
+    twoFATitle = title;
+    twoFADetails = details;
+    setState(UI_STATE_CONFIRM_2FA);
+}
+
+void DisplayUI::showOTAProgress(int percent) {
+    notifyActivity();
+    otaPercent = constrain(percent, 0, 100);
+    if (currentState != UI_STATE_OTA) {
+        setState(UI_STATE_OTA);
+    } else {
+        renderOTA();
+    }
+}
+
+// 顶部全功能状态栏
 void DisplayUI::renderStatusBar() {
     lcd.fillRect(0, 0, 240, 26, 0x181825);
     
-    // 1. 左侧：飞书在线绿点
+    // 1. 飞书在线指示灯
     lcd.fillCircle(12, 13, 4, 0x00E676);
     lcd.setTextSize(1);
     lcd.setTextColor(0x9ECE6A, 0x181825);
     lcd.setTextDatum(ML_DATUM);
     lcd.drawString("LINK", 22, 13);
 
-    // 2. 中间：时间字符串
+    // 2. 时间
     lcd.setTextColor(0xFFFFFF, 0x181825);
     lcd.setTextDatum(MC_DATUM);
     lcd.drawString(currentTimeStr, 110, 13);
 
-    // 3. 右侧：Wi-Fi RSSI 信号格 (4 阶梯条)
+    // 3. Wi-Fi RSSI 信号格
     int rssi = WiFi.RSSI();
     bool wifiOk = (WiFi.status() == WL_CONNECTED);
     int bars = 0;
@@ -133,13 +178,13 @@ void DisplayUI::renderStatusBar() {
         lcd.fillRect(wifiX + (b * 4), 18 - barH, 3, barH, c);
     }
 
-    // 4. 右侧：CW2017 电池电量图标与百分比
+    // 4. CW2017 电池状态与百分比
     uint8_t pct = battery.getPercent();
     bool charging = battery.isCharging();
     int batX = 188;
     int batY = 6;
     lcd.drawRoundRect(batX, batY, 26, 14, 2, 0x7AA2F7);
-    lcd.fillRect(batX + 26, batY + 3, 2, 8, 0x7AA2F7); // 电池正极极柱
+    lcd.fillRect(batX + 26, batY + 3, 2, 8, 0x7AA2F7);
     
     int fillW = map(constrain(pct, 0, 100), 0, 100, 0, 22);
     uint16_t batColor = (pct > 40) ? 0x00E676 : ((pct > 15) ? 0xFFD600 : 0xFF5252);
@@ -147,7 +192,6 @@ void DisplayUI::renderStatusBar() {
         lcd.fillRect(batX + 2, batY + 2, fillW, 10, batColor);
     }
     
-    // 电池内部或前方提示
     lcd.setTextDatum(MR_DATUM);
     lcd.setTextSize(1);
     if (charging) {
@@ -159,41 +203,35 @@ void DisplayUI::renderStatusBar() {
     }
 }
 
-// 灵动拟人化表情头像 (Avatar Face)
+// 灵动拟人化表情头像
 void DisplayUI::renderAvatarFace(int cx, int cy, const char* mood) {
-    // 头部圆角卡片底衬
     lcd.fillRoundRect(cx - 50, cy - 35, 100, 70, 16, 0x1F2335);
     lcd.drawRoundRect(cx - 50, cy - 35, 100, 70, 16, 0x3B4261);
 
     bool blink = (animFrame % 60 >= 56);
 
     if (strcmp(mood, "idle") == 0) {
-        // 呆萌大眼睛 (支持定时眨眼)
         if (blink) {
             lcd.fillRect(cx - 28, cy - 2, 18, 4, 0x00E5FF);
             lcd.fillRect(cx + 10, cy - 2, 18, 4, 0x00E5FF);
         } else {
             lcd.fillRoundRect(cx - 28, cy - 14, 18, 28, 8, 0x00E5FF);
             lcd.fillRoundRect(cx + 10, cy - 14, 18, 28, 8, 0x00E5FF);
-            // 瞳孔反光点
             lcd.fillCircle(cx - 24, cy - 8, 3, 0xFFFFFF);
             lcd.fillCircle(cx + 14, cy - 8, 3, 0xFFFFFF);
         }
     } else if (strcmp(mood, "listening") == 0) {
-        // 聆听状态：专注大眼 + 灵动发光
         lcd.fillRoundRect(cx - 30, cy - 16, 20, 32, 9, 0x00E5FF);
         lcd.fillRoundRect(cx + 10, cy - 16, 20, 32, 9, 0x00E5FF);
         lcd.fillCircle(cx - 20, cy - 2, 4, 0xFFFFFF);
         lcd.fillCircle(cx + 20, cy - 2, 4, 0xFFFFFF);
     } else if (strcmp(mood, "thinking") == 0) {
-        // 思考状态：双环旋转或眯眼沉思
         float rot = (animFrame * 0.15f);
         int eyeOffX = (int)(cos(rot) * 4);
         int eyeOffY = (int)(sin(rot) * 4);
         lcd.fillRoundRect(cx - 28 + eyeOffX, cy - 10 + eyeOffY, 18, 20, 6, 0xBB9AF7);
         lcd.fillRoundRect(cx + 10 + eyeOffX, cy - 10 + eyeOffY, 18, 20, 6, 0xBB9AF7);
     } else if (strcmp(mood, "speaking") == 0) {
-        // 说话状态：开心月牙眼 + 嘴巴声波开合
         lcd.fillRoundRect(cx - 28, cy - 14, 18, 22, 6, 0x00E676);
         lcd.fillRoundRect(cx + 10, cy - 14, 18, 22, 6, 0x00E676);
         int mouthH = 4 + (animFrame % 4) * 3;
@@ -204,7 +242,6 @@ void DisplayUI::renderAvatarFace(int cx, int cy, const char* mood) {
 void DisplayUI::drawWaveform(int level) {
     if (currentState != UI_STATE_LISTENING) return;
     
-    // 动态 8 频段跳动频谱条 (Equalizer Visualizer)
     int baseX = 24;
     int baseY = 240;
     int barW = 18;
@@ -216,10 +253,7 @@ void DisplayUI::drawWaveform(int level) {
         dynamicH = constrain(dynamicH, 6, 80);
         
         int x = baseX + i * (barW + gap);
-        // 清除旧柱状区域
         lcd.fillRect(x, baseY - 80, barW, 80, 0x101018);
-        
-        // 绘制渐变色跳动条
         uint16_t col = (i < 4) ? 0x00E5FF : 0x7AA2F7;
         lcd.fillRoundRect(x, baseY - dynamicH, barW, dynamicH, 4, col);
     }
@@ -227,7 +261,6 @@ void DisplayUI::drawWaveform(int level) {
 
 void DisplayUI::renderConnecting() {
     renderStatusBar();
-    
     renderAvatarFace(120, 90, "thinking");
 
     lcd.setTextColor(0x00E5FF, 0x101018);
@@ -239,7 +272,6 @@ void DisplayUI::renderConnecting() {
     lcd.setTextColor(0xAAAAAA, 0x101018);
     lcd.drawString("Antigravity Passport", 120, 180);
     
-    // 进度条
     lcd.fillRoundRect(30, 215, 180, 8, 4, 0x222233);
     int barLen = (animFrame * 12) % 180;
     lcd.fillRoundRect(30, 215, barLen, 8, 4, 0x00E5FF);
@@ -255,8 +287,10 @@ void DisplayUI::renderDashboard() {
         renderDashboardPage0();
     } else if (dashboardPage == 1) {
         renderDashboardPage1();
-    } else {
+    } else if (dashboardPage == 2) {
         renderDashboardPage2();
+    } else {
+        renderDashboardPage3();
     }
 
     // 底部多功能按键与分页提示
@@ -264,15 +298,18 @@ void DisplayUI::renderDashboard() {
     lcd.setTextColor(0x7DCFFF, 0x181824);
     lcd.setTextDatum(MC_DATUM);
     lcd.setTextSize(1);
-    String pageIndicator = "[" + String(dashboardPage + 1) + "/3] ";
-    lcd.drawString(pageIndicator + "[Hold OK: Talk] [Up/Down: Page]", 120, 306);
+    String pageIndicator = "[" + String(dashboardPage + 1) + "/4] ";
+    if (dashboardPage == 3) {
+        lcd.drawString(pageIndicator + "[OK: Start/Pause] [Down: Page]", 120, 306);
+    } else {
+        lcd.drawString(pageIndicator + "[Hold OK: Talk] [Up/Down: Page]", 120, 306);
+    }
 }
 
 // 页面 0: 飞书双链工作区看板
 void DisplayUI::renderDashboardPage0() {
     renderAvatarFace(120, 72, "idle");
 
-    // 中部：当前工作项目卡片
     lcd.fillRoundRect(12, 115, 216, 75, 8, 0x1F2335);
     lcd.drawRoundRect(12, 115, 216, 75, 8, 0x3B4261);
     
@@ -289,7 +326,6 @@ void DisplayUI::renderDashboardPage0() {
     lcd.setTextSize(1);
     lcd.drawString("Dual-Link Engine: READY", 24, 168);
 
-    // 下部：控制状态指标卡片
     lcd.fillRoundRect(12, 198, 216, 85, 8, 0x1F2335);
     lcd.drawRoundRect(12, 198, 216, 85, 8, 0x3B4261);
     
@@ -316,13 +352,11 @@ void DisplayUI::renderDashboardPage1() {
     int y = 72;
     int dy = 22;
 
-    // CW2017 电池参数
     lcd.drawString("Battery Gauge: CW2017 (0x63)", 24, y); y += dy;
     lcd.drawString("Battery SOC  : " + String(battery.getPercent()) + "%", 24, y); y += dy;
     lcd.drawString("Cell Voltage : " + String(battery.getVoltageMv()) + " mV", 24, y); y += dy;
     lcd.drawString("Power State  : " + String(battery.isCharging() ? "Charging" : "Discharging"), 24, y); y += dy;
 
-    // ESP32-C3 核心指标
     uint32_t freeHeap = esp_get_free_heap_size() / 1024;
     lcd.drawString("Free Heap    : " + String(freeHeap) + " KB", 24, y); y += dy;
     lcd.drawString("CPU Freq     : 160 MHz (RISC-V)", 24, y); y += dy;
@@ -348,7 +382,7 @@ void DisplayUI::renderDashboardPage2() {
     lcd.drawString("• Interactive Cards Enabled", 24, 98);
     lcd.drawString("• Voice PTT: OK button hold", 24, 120);
     lcd.drawString("• Emergency Halt: Down hold", 24, 142);
-    lcd.drawString("• Gateway Sync: Port 8765", 24, 164);
+    lcd.drawString("• Barge-in Interrupt Supported", 24, 164);
 
     lcd.fillRoundRect(24, 195, 192, 70, 6, 0x181825);
     lcd.setTextColor(0x7DCFFF, 0x181825);
@@ -356,6 +390,52 @@ void DisplayUI::renderDashboardPage2() {
     lcd.setTextColor(0x9ECE6A, 0x181825);
     lcd.drawString("Press & Hold [OK] to talk", 32, 225);
     lcd.drawString("Release to submit to Agent", 32, 243);
+}
+
+// 页面 3: 随身独立番茄钟 (Pomodoro Focus)
+void DisplayUI::renderDashboardPage3() {
+    lcd.fillRoundRect(12, 36, 216, 248, 8, 0x1F2335);
+    lcd.drawRoundRect(12, 36, 216, 248, 8, 0x3B4261);
+
+    lcd.setTextColor(0xFF7043, 0x1F2335);
+    lcd.setTextDatum(MC_DATUM);
+    lcd.setTextSize(2);
+    lcd.drawString("POMODORO", 120, 60);
+
+    // 倒计时表盘圆环
+    int cx = 120;
+    int cy = 145;
+    int radius = 55;
+    lcd.drawCircle(cx, cy, radius, 0x3B4261);
+    
+    // 进度弧线
+    float progress = (float)(1500 - pomodoroRemainingSec) / 1500.0f;
+    int endAngle = (int)(progress * 360.0f);
+    for (int a = 0; a < endAngle; a += 4) {
+        float rad = (a - 90) * (PI / 180.0f);
+        int px = cx + cos(rad) * radius;
+        int py = cy + sin(rad) * radius;
+        lcd.fillCircle(px, py, 2, 0xFF7043);
+    }
+
+    // 数字时钟展示
+    int minutes = pomodoroRemainingSec / 60;
+    int seconds = pomodoroRemainingSec % 60;
+    char timeBuffer[10];
+    snprintf(timeBuffer, sizeof(timeBuffer), "%02d:%02d", minutes, seconds);
+
+    lcd.setTextColor(0xFFFFFF, 0x1F2335);
+    lcd.setTextSize(3);
+    lcd.drawString(timeBuffer, cx, cy);
+
+    lcd.setTextSize(1);
+    if (pomodoroRunning) {
+        lcd.setTextColor(0x00E676, 0x1F2335);
+        lcd.drawString("FOCUSING...", cx, cy + 80);
+    } else {
+        lcd.setTextColor(0xFFD600, 0x1F2335);
+        lcd.drawString("PAUSED (Short OK: Start)", cx, cy + 80);
+    }
 }
 
 void DisplayUI::renderListening() {
@@ -371,7 +451,6 @@ void DisplayUI::renderListening() {
     lcd.setTextColor(0xAAAAAA, 0x101018);
     lcd.drawString("Recording I2S Audio Stream", 120, 160);
     
-    // 底部提示
     lcd.setTextColor(0xFF9800, 0x101018);
     lcd.drawString("Release [OK] to Send to Feishu", 120, 275);
 }
@@ -389,7 +468,6 @@ void DisplayUI::renderThinking() {
     lcd.setTextColor(0xC0CAF5, 0x101018);
     lcd.drawString("Antigravity Agent Processing", 120, 160);
     
-    // 旋转粒子环动效
     int centerX = 120;
     int centerY = 205;
     for (int i = 0; i < 8; i++) {
@@ -415,24 +493,23 @@ void DisplayUI::renderSpeaking() {
     lcd.setTextSize(2);
     lcd.drawString("SPEAKING...", 120, 125);
     
-    lcd.fillRoundRect(16, 145, 208, 125, 8, 0x1F2335);
-    lcd.drawRoundRect(16, 145, 208, 125, 8, 0x00E676);
+    lcd.fillRoundRect(16, 145, 208, 120, 8, 0x1F2335);
+    lcd.drawRoundRect(16, 145, 208, 120, 8, 0x00E676);
     
     lcd.setTextSize(1);
     lcd.setTextColor(0xFFFFFF, 0x1F2335);
     lcd.setTextDatum(TL_DATUM);
     
-    // 多行字幕排版
-    int y = 158;
+    int y = 156;
     for (int i = 0; i < subtitleText.length(); i += 18) {
-        if (y > 250) break;
+        if (y > 245) break;
         lcd.drawString(subtitleText.substring(i, min((int)subtitleText.length(), i + 18)), 26, y);
-        y += 20;
+        y += 18;
     }
     
-    lcd.setTextColor(0x7AA2F7, 0x101018);
+    lcd.setTextColor(0xFF9800, 0x101018);
     lcd.setTextDatum(MC_DATUM);
-    lcd.drawString("Synced with Feishu TTS", 120, 285);
+    lcd.drawString("Press OK or Down to Interrupt", 120, 280);
 }
 
 void DisplayUI::renderAlert() {
@@ -462,7 +539,75 @@ void DisplayUI::renderAlert() {
     lcd.drawString("Auto-dismissing in 5s...", 120, 265);
 }
 
-// 智能背光管理：45秒无操作降亮，120秒熄屏休眠
+// 物理 2FA 高危确认界面
+void DisplayUI::render2FA() {
+    lcd.fillRoundRect(10, 30, 220, 255, 10, 0x2B1515);
+    lcd.drawRoundRect(10, 30, 220, 255, 10, 0xFF5252);
+
+    lcd.setTextColor(0xFF5252, 0x2B1515);
+    lcd.setTextDatum(MC_DATUM);
+    lcd.setTextSize(2);
+    lcd.drawString("PHYSICAL 2FA", 120, 55);
+
+    lcd.setTextSize(1);
+    lcd.setTextColor(0xFFD600, 0x2B1515);
+    lcd.drawString("High-Risk Action Request", 120, 80);
+
+    lcd.fillRoundRect(20, 100, 200, 95, 6, 0x1F1212);
+    lcd.setTextColor(0xFFFFFF, 0x1F1212);
+    lcd.setTextDatum(TL_DATUM);
+    lcd.drawString("Task: " + twoFATitle, 30, 112);
+    
+    int y = 135;
+    for (int i = 0; i < twoFADetails.length(); i += 18) {
+        if (y > 185) break;
+        lcd.drawString(twoFADetails.substring(i, min((int)twoFADetails.length(), i + 18)), 30, y);
+        y += 18;
+    }
+
+    // 两个按键操作选择
+    lcd.fillRoundRect(22, 210, 90, 36, 6, 0x00E676);
+    lcd.setTextColor(0x000000, 0x00E676);
+    lcd.setTextDatum(MC_DATUM);
+    lcd.drawString("[Up] Approve", 67, 228);
+
+    lcd.fillRoundRect(128, 210, 90, 36, 6, 0xFF5252);
+    lcd.setTextColor(0xFFFFFF, 0xFF5252);
+    lcd.drawString("[Down] Reject", 173, 228);
+
+    lcd.setTextColor(0xAAAAAA, 0x2B1515);
+    lcd.drawString("Waiting for hardware button...", 120, 268);
+}
+
+// OTA 无线升级进度展示
+void DisplayUI::renderOTA() {
+    lcd.fillRect(0, 0, 240, 320, 0x101018);
+    
+    lcd.setTextColor(0x00E5FF, 0x101018);
+    lcd.setTextDatum(MC_DATUM);
+    lcd.setTextSize(2);
+    lcd.drawString("OTA UPDATING", 120, 100);
+
+    lcd.setTextSize(1);
+    lcd.setTextColor(0xAAAAAA, 0x101018);
+    lcd.drawString("Wireless Firmware Upgrade", 120, 130);
+
+    // 进度条
+    lcd.fillRoundRect(20, 170, 200, 16, 8, 0x222233);
+    int barW = map(otaPercent, 0, 100, 0, 196);
+    if (barW > 0) {
+        lcd.fillRoundRect(22, 172, barW, 12, 6, 0x00E5FF);
+    }
+
+    lcd.setTextColor(0xFFFFFF, 0x101018);
+    lcd.setTextSize(2);
+    lcd.drawString(String(otaPercent) + "%", 120, 215);
+
+    lcd.setTextSize(1);
+    lcd.setTextColor(0xFF9800, 0x101018);
+    lcd.drawString("Do NOT power off device!", 120, 255);
+}
+
 void DisplayUI::updateBacklight() {
     unsigned long idle = millis() - lastActivityTime;
     if (idle > 120000) {
@@ -487,17 +632,29 @@ void DisplayUI::loop() {
     unsigned long now = millis();
     updateBacklight();
 
+    // 独立番茄钟倒计时步进
+    if (pomodoroRunning && (now - lastPomodoroTick >= 1000)) {
+        lastPomodoroTick = now;
+        if (pomodoroRemainingSec > 0) {
+            pomodoroRemainingSec--;
+            if (currentState == UI_STATE_DASHBOARD && dashboardPage == 3) {
+                renderDashboardPage3();
+            }
+        } else {
+            pomodoroRunning = false;
+            pomodoroRemainingSec = 25 * 60;
+            showAlert("🎉 专注达成！", "恭喜完成一个 25 分钟番茄时段，建议休息 5 分钟！", "info");
+        }
+    }
+
     if (now - lastAnimTime > 80) {
         lastAnimTime = now;
         animFrame++;
         
         if (currentState == UI_STATE_THINKING) {
             renderThinking();
-        } else if (currentState == UI_STATE_DASHBOARD && (animFrame % 60 >= 56 || animFrame % 60 == 0)) {
-            // 定时眨眼重绘
-            if (dashboardPage == 0) {
-                renderAvatarFace(120, 72, "idle");
-            }
+        } else if (currentState == UI_STATE_DASHBOARD && dashboardPage == 0 && (animFrame % 60 >= 56 || animFrame % 60 == 0)) {
+            renderAvatarFace(120, 72, "idle");
         }
     }
     

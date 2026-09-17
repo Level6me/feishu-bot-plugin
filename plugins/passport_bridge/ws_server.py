@@ -32,6 +32,8 @@ class PassportServer:
         self.active_websockets: Set[web.WebSocketResponse] = set()
         self.device_info: Dict[str, dict] = {}  # ws -> info
         self.voice_buffers: Dict[web.WebSocketResponse, bytearray] = {}
+        self.tts_interrupted: Dict[web.WebSocketResponse, bool] = {}
+        self.pending_2fa_futures: Dict[str, asyncio.Future] = {}
         
         self._dashboard_task: Optional[asyncio.Task] = None
         self._running = False
@@ -179,6 +181,20 @@ class PassportServer:
             raw_pcm = bytes(self.voice_buffers.pop(ws, bytearray()))
             if raw_pcm:
                 asyncio.create_task(self._process_recorded_audio(ws, raw_pcm))
+
+        elif msg_type == "interrupt":
+            log.info("[PassportBridge] 收到硬件端随时打断 (Barge-in) 指令")
+            self.tts_interrupted[ws] = True
+            await self.broadcast_ai_state("idle", "已打断播报")
+
+        elif msg_type == "confirm_response":
+            action_id = data.get("action_id")
+            result = data.get("result")
+            log.info(f"[PassportBridge] 收到硬件物理 2FA 鉴权响应: action_id={action_id}, result={result}")
+            if action_id in self.pending_2fa_futures:
+                fut = self.pending_2fa_futures.pop(action_id)
+                if not fut.done():
+                    fut.set_result(result == "approved")
 
     async def _handle_client_binary(self, ws: web.WebSocketResponse, data: bytes):
         """接收实时 PCM 音频数据帧 (16kHz 16bit 单声道)"""
@@ -362,6 +378,7 @@ class PassportServer:
         temp_dir = tempfile.gettempdir()
         mp3_path = os.path.join(temp_dir, f"tts_pass_{int(time.time()*1000)}.mp3")
         
+        self.tts_interrupted[ws] = False
         try:
             communicate = edge_tts.Communicate(spoken_text, "zh-CN-XiaoxiaoNeural")
             await communicate.save(mp3_path)
@@ -369,14 +386,18 @@ class PassportServer:
             if os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 0:
                 with open(mp3_path, "rb") as f:
                     mp3_data = f.read()
-                # 分片以二进制推给硬件
+                # 分片以二进制推给硬件，并在每个分片前检测随时打断信号
                 chunk_size = 1024
                 for i in range(0, len(mp3_data), chunk_size):
+                    if self.tts_interrupted.get(ws, False):
+                        log.info("[PassportBridge] TTS 音频推流已被硬件端打断截断")
+                        break
                     chunk = mp3_data[i:i+chunk_size]
                     await ws.send_bytes(chunk)
                     await asyncio.sleep(0.01)
 
-            await self.send_json(ws, {"type": "ai_speech_end"})
+            if not self.tts_interrupted.get(ws, False):
+                await self.send_json(ws, {"type": "ai_speech_end"})
         except Exception as e:
             log.error(f"[PassportBridge] TTS 合成推流失败: {e}")
         finally:
@@ -475,3 +496,29 @@ class PassportServer:
             return web.json_response({"ok": True})
         except Exception as e:
             return web.json_response({"ok": False, "error": str(e)}, status=400)
+
+    async def request_physical_2fa(self, action_id: str, title: str, details: str, timeout_sec: int = 30) -> bool:
+        """向所有在线硬件广播物理 2FA 确认弹窗，并异步等待硬件按键批准/拦截"""
+        if not self.active_websockets:
+            log.warning("[PassportBridge] 无在线硬件设备，无法执行物理 2FA 鉴权")
+            return False
+
+        fut = asyncio.get_running_loop().create_future()
+        self.pending_2fa_futures[action_id] = fut
+
+        msg = {
+            "type": "confirm_request",
+            "action_id": action_id,
+            "title": title,
+            "details": details
+        }
+        for ws in list(self.active_websockets):
+            await self.send_json(ws, msg)
+
+        try:
+            approved = await asyncio.wait_for(fut, timeout=timeout_sec)
+            return approved
+        except asyncio.TimeoutError:
+            log.warning(f"[PassportBridge] 物理 2FA 鉴权超时 (action_id={action_id})")
+            self.pending_2fa_futures.pop(action_id, None)
+            return False
