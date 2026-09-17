@@ -13,7 +13,9 @@ enum UiState {
     UI_STATE_LISTENING,
     UI_STATE_THINKING,
     UI_STATE_SPEAKING,
-    UI_STATE_ALERT
+    UI_STATE_ALERT,
+    UI_STATE_CONFIRM_2FA,
+    UI_STATE_OTA
 };
 
 class LGFX_ST7789 : public lgfx::LGFX_Device {
@@ -81,9 +83,20 @@ public:
     void setThinkingText(const String& text);
     void setSpeakingText(const String& text);
     void showAlert(const String& title, const String& content, const String& level = "warning");
+    void show2FA(const String& actionId, const String& title, const String& details);
+    String get2FAActionId() const { return twoFAActionId; }
+    void showOTAProgress(int percent);
     void drawWaveform(int level);
+    
     void nextDashboardPage();
     void prevDashboardPage();
+    int getDashboardPage() const { return dashboardPage; }
+    
+    // 番茄钟控制
+    void togglePomodoro();
+    void resetPomodoro();
+    bool isPomodoroRunning() const { return pomodoroRunning; }
+
     void notifyActivity();
     void loop();
 
@@ -98,24 +111,38 @@ private:
     String alertContent;
     String alertLevel;
     
-    int dashboardPage;       // 0: 主看板, 1: 硬件诊断, 2: 飞书消息流
+    // 物理 2FA 鉴权字段
+    String twoFAActionId;
+    String twoFATitle;
+    String twoFADetails;
+
+    // 独立番茄钟状态
+    bool pomodoroRunning;
+    int pomodoroRemainingSec;
+    unsigned long lastPomodoroTick;
+
+    int dashboardPage;       // 0: 飞书协同, 1: 硬件诊断, 2: 飞书通知, 3: 独立番茄钟
     unsigned long alertStartTime;
     unsigned long lastAnimTime;
     unsigned long lastActivityTime;
     uint8_t currentBrightness;
     uint8_t targetBrightness;
     int animFrame;
+    int otaPercent;
 
     void renderStatusBar();
     void renderConnecting();
     void renderDashboard();
     void renderDashboardPage0(); // 飞书协同看板
     void renderDashboardPage1(); // 硬件诊断与电量
-    void renderDashboardPage2(); // 飞书通知详情
+    void renderDashboardPage2(); // 飞书通知流
+    void renderDashboardPage3(); // 随身番茄钟
     void renderListening();
     void renderThinking();
     void renderSpeaking();
     void renderAlert();
+    void render2FA();
+    void renderOTA();
     void renderAvatarFace(int cx, int cy, const char* mood);
     void updateBacklight();
 };
