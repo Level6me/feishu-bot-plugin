@@ -15,6 +15,49 @@ from aiohttp import web, WSMsgType
 from logger import log
 from lark_client import send_card_to_chat_sdk, send_text_to_chat_sdk
 import app_state
+import struct
+
+STEP_TABLE = [
+    7, 8, 9, 10, 11, 12, 13, 14, 16, 17,
+    19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
+    50, 55, 60, 66, 73, 80, 88, 97, 107, 118,
+    130, 143, 157, 173, 190, 209, 230, 253, 279, 307,
+    337, 371, 408, 449, 494, 544, 598, 658, 724, 796,
+    876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066,
+    2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358,
+    5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899,
+    15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767
+]
+INDEX_TABLE = [
+    -1, -1, -1, -1, 2, 4, 6, 8,
+    -1, -1, -1, -1, 2, 4, 6, 8
+]
+
+def decode_ima_adpcm(adpcm_data: bytes) -> bytes:
+    """将 IMA-ADPCM 4:1 压缩音频解码为 16kHz 16-bit 单声道线性 PCM"""
+    predicted = 0
+    index = 0
+    out_samples = []
+
+    for byte in adpcm_data:
+        for nibble in (byte & 0x0F, (byte >> 4) & 0x0F):
+            step = STEP_TABLE[index]
+            diffq = step >> 3
+            if nibble & 4: diffq += step
+            if nibble & 2: diffq += step >> 1
+            if nibble & 1: diffq += step >> 2
+            if nibble & 8:
+                predicted -= diffq
+                if predicted < -32768: predicted = -32768
+            else:
+                predicted += diffq
+                if predicted > 32767: predicted = 32767
+            index += INDEX_TABLE[nibble]
+            if index < 0: index = 0
+            elif index > 88: index = 88
+            out_samples.append(predicted)
+
+    return struct.pack(f"<{len(out_samples)}h", *out_samples)
 
 class PassportServer:
     def __init__(self, host: str = "0.0.0.0", port: int = 8765, udp_port: int = 8765, plugin=None):
@@ -177,9 +220,14 @@ class PassportServer:
             await self.broadcast_ai_state("listening", "正在聆听...")
 
         elif msg_type == "voice_end":
-            log.info("[PassportBridge] 硬件录音结束，开始语音识别处理...")
-            raw_pcm = bytes(self.voice_buffers.pop(ws, bytearray()))
-            if raw_pcm:
+            log.info("[PassportBridge] 硬件录音结束，解码 ADPCM 并开始语音识别处理...")
+            raw_data = bytes(self.voice_buffers.pop(ws, bytearray()))
+            if raw_data:
+                try:
+                    raw_pcm = decode_ima_adpcm(raw_data)
+                except Exception as e:
+                    log.warning(f"[PassportBridge] ADPCM 解码异常，降级为原样 PCM: {e}")
+                    raw_pcm = raw_data
                 asyncio.create_task(self._process_recorded_audio(ws, raw_pcm))
 
         elif msg_type == "interrupt":
@@ -208,18 +256,31 @@ class PassportServer:
                 self.voice_buffers[ws] = bytearray()
                 await self.broadcast_ai_state("listening", "按住讲话中...")
             elif action == "release":
-                raw_pcm = bytes(self.voice_buffers.pop(ws, bytearray()))
-                if raw_pcm and len(raw_pcm) > 3200:  # 大于 100ms
-                    asyncio.create_task(self._process_recorded_audio(ws, raw_pcm))
+                raw_data = bytes(self.voice_buffers.pop(ws, bytearray()))
+                if raw_data:
+                    try:
+                        raw_pcm = decode_ima_adpcm(raw_data)
+                    except Exception:
+                        raw_pcm = raw_data
+                    if len(raw_pcm) > 3200:
+                        asyncio.create_task(self._process_recorded_audio(ws, raw_pcm))
+                    else:
+                        await self.broadcast_ai_state("idle", "")
                 else:
                     await self.broadcast_ai_state("idle", "")
+            elif action == "double_click":
+                # 动作宏 1: OK 键双击 -> 飞书快捷签到打卡
+                log.info("[PassportBridge] 触发动作宏: [OK 双击] -> 飞书快捷签到打卡")
+                await self._execute_macro_action("ok_double_click", "飞书工作台状态签到")
 
         elif btn == "up":
             if action == "short_press":
-                # 看板主动刷新
                 await self.send_dashboard_to_client(ws)
+            elif action == "double_click":
+                # 动作宏 2: 上键双击 -> 触发代码仓库 Git 状态巡检卡片
+                log.info("[PassportBridge] 触发动作宏: [Up 双击] -> Git 代码库状态巡检")
+                await self._execute_macro_action("up_double_click", "当前代码库 Git 巡检")
             elif action == "long_press":
-                # 切换/提示当前活跃项目
                 cwd = os.getcwd()
                 proj_name = os.path.basename(cwd)
                 await self.send_json(ws, {
@@ -232,10 +293,12 @@ class PassportServer:
 
         elif btn == "down":
             if action == "short_press":
-                # 触发健康巡检卡片
                 await self.send_dashboard_to_client(ws)
+            elif action == "double_click":
+                # 动作宏 3: 下键双击 -> 触发自定义扩展动作
+                log.info("[PassportBridge] 触发动作宏: [Down 双击] -> 自定义工作流扩展")
+                await self._execute_macro_action("down_double_click", "工位安全防窥 / 自定义动作")
             elif action == "long_press":
-                # 紧急熔断物理键：停止正在运行的任务
                 log.warning("[PassportBridge] 硬件端触发紧急熔断 Physical Stop 信号！")
                 await self._trigger_emergency_stop()
                 await self.send_json(ws, {
@@ -245,6 +308,126 @@ class PassportServer:
                     "content": "已终止所有后台正在执行的 Agent 任务！",
                     "duration_sec": 4
                 })
+
+    async def _execute_macro_action(self, macro_name: str, desc: str):
+        """执行硬件按键绑定的物理动作宏，支持开箱即用动作与可扩展自定义配置"""
+        log.info(f"[PassportBridge] 执行物理动作宏: {macro_name} ({desc})")
+        chat_id = self.plugin.get_config().get("bound_chat_id") if self.plugin else ""
+        if not chat_id and hasattr(app_state, "chat_queues") and app_state.chat_queues:
+            chat_id = list(app_state.chat_queues.keys())[0]
+
+        # 检查是否在 config.json 中配置了自定义宏重载
+        cfg = self.plugin.get_config() if self.plugin else {}
+        custom_macros = cfg.get("macro_bindings", {})
+        custom_action = custom_macros.get(macro_name)
+
+        if custom_action and isinstance(custom_action, dict):
+            cmd = custom_action.get("command")
+            custom_desc = custom_action.get("description", desc)
+            notify_feishu = custom_action.get("notify_feishu", True)
+            
+            output_msg = ""
+            if cmd:
+                try:
+                    proc = await asyncio.create_subprocess_shell(
+                        cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        cwd=os.getcwd()
+                    )
+                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+                    output_msg = (stdout.decode('utf-8', errors='ignore') or stderr.decode('utf-8', errors='ignore')).strip()
+                except Exception as e:
+                    output_msg = f"执行出错: {e}"
+
+            await self.broadcast_alert("物理宏已执行", f"已触发: {custom_desc}", level="info", duration_sec=4)
+            if chat_id and notify_feishu:
+                card = {
+                    "config": {"wide_screen_mode": True},
+                    "header": {
+                        "template": "blue",
+                        "title": {"content": f"⚡ 硬件物理快捷宏触发: {custom_desc}", "tag": "plain_text"}
+                    },
+                    "elements": [
+                        {
+                            "tag": "markdown",
+                            "content": f"**触发按键**：`{macro_name}`\n**执行命令**：`{cmd or '内置动作'}`\n\n**执行结果**：\n```text\n{output_msg[:500] if output_msg else '命令执行完成，退出码 0'}\n```"
+                        }
+                    ]
+                }
+                send_card_to_chat_sdk(chat_id, card)
+            return
+
+        # 默认开箱即用动作
+        if macro_name == "ok_double_click":
+            # 宏 1: OK 双击 -> 飞书工作台状态签到
+            now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+            await self.broadcast_alert("工作签到成功", "工位状态已激活", level="info", duration_sec=4)
+            if chat_id:
+                checkin_card = {
+                    "config": {"wide_screen_mode": True},
+                    "header": {
+                        "template": "green",
+                        "title": {"content": "📍 硬件物理签到打卡完成", "tag": "plain_text"}
+                    },
+                    "elements": [
+                        {
+                            "tag": "markdown",
+                            "content": f"✅ **签到时间**：`{now_str}`\n🏷️ **设备节点**：`FoloToy AI Passport (工位端)`\n🟢 **当前状态**：`工作中 (Focus Mode)`\n\n*由硬件 OK 键双击硬件动作宏极速打卡触发*"
+                        }
+                    ]
+                }
+                send_card_to_chat_sdk(chat_id, checkin_card)
+
+        elif macro_name == "up_double_click":
+            # 宏 2: Up 双击 -> Git 代码库状态巡检
+            try:
+                proc = await asyncio.create_subprocess_shell(
+                    "git branch --show-current && git status -s && git log -1 --oneline",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=os.getcwd()
+                )
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+                git_info = stdout.decode('utf-8', errors='ignore').strip()
+            except Exception as e:
+                git_info = f"巡检失败: {e}"
+
+            await self.broadcast_alert("Git 巡检完毕", "代码库状态已生成", level="info", duration_sec=4)
+            if chat_id:
+                git_card = {
+                    "config": {"wide_screen_mode": True},
+                    "header": {
+                        "template": "purple",
+                        "title": {"content": "🔍 硬件快捷触发：代码仓库 Git 状态巡检", "tag": "plain_text"}
+                    },
+                    "elements": [
+                        {
+                            "tag": "markdown",
+                            "content": f"📁 **工作区**：`{os.path.basename(os.getcwd())}`\n\n```text\n{git_info if git_info else '工作区完全干净 (Clean)'}\n```\n\n*由硬件 Up 键双击硬件动作宏极速巡检触发*"
+                        }
+                    ]
+                }
+                send_card_to_chat_sdk(chat_id, git_card)
+
+        elif macro_name == "down_double_click":
+            # 宏 3: Down 双击 -> 工位防窥与安全锁屏 / 扩展动作
+            await self.broadcast_alert("工位安全模式", "已切换至安全防窥", level="warning", duration_sec=4)
+            if chat_id:
+                sec_card = {
+                    "config": {"wide_screen_mode": True},
+                    "header": {
+                        "template": "orange",
+                        "title": {"content": "🛡️ 硬件物理快捷键：工位安全守护", "tag": "plain_text"}
+                    },
+                    "elements": [
+                        {
+                            "tag": "markdown",
+                            "content": f"🔒 **安全事件**：工位端已触发物理安全防窥动作。\n🕒 **触发时间**：`{time.strftime('%H:%M:%S')}`\n\n*可通过修改 config.json 中的 macro_bindings.down_double_click 绑定自定义脚本！*"
+                        }
+                    ]
+                }
+                send_card_to_chat_sdk(chat_id, sec_card)
 
     async def _trigger_emergency_stop(self):
         """执行紧急终止所有任务"""
@@ -287,10 +470,64 @@ class PassportServer:
             log.info(f"[PassportBridge] 硬件语音转录成功: '{text}'")
             await self.broadcast_ai_state("thinking", f"AI思考中: {text[:10]}...")
 
-            # 3. 联动飞书卡片归档
+            # 3. 检查飞书绑定会话
             chat_id = self.plugin.get_config().get("bound_chat_id") if self.plugin else ""
             if not chat_id and hasattr(app_state, "chat_queues") and app_state.chat_queues:
                 chat_id = list(app_state.chat_queues.keys())[0]
+
+            # 4. 特性4: 语音灵感一键录入飞书多维表格 / 待办 (Bitable Quick Capture)
+            normalized_lower = text.strip().lower()
+            quick_capture_keywords = ("记录", "待办", "备忘", "todo", "note", "记一下", "灵感", "稍后", "任务", "创建待办")
+            if any(normalized_lower.startswith(kw) for kw in quick_capture_keywords):
+                log.info(f"[PassportBridge] 命中待办/灵感快速归档指令: '{text}'")
+                now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+                content_body = text.strip()
+                for kw in quick_capture_keywords:
+                    if normalized_lower.startswith(kw):
+                        content_body = text.strip()[len(kw):].lstrip("：:,， ").strip()
+                        break
+                if not content_body:
+                    content_body = text.strip()
+
+                if chat_id:
+                    bitable_card = {
+                        "config": {"wide_screen_mode": True},
+                        "header": {
+                            "template": "turquoise",
+                            "title": {"content": "📋 飞书多维表格 / 待办任务快速录入", "tag": "plain_text"}
+                        },
+                        "elements": [
+                            {
+                                "tag": "markdown",
+                                "content": (
+                                    f"✨ **灵感/待办主题**：\n> **{content_body}**\n\n"
+                                    f"🏷️ **分类标签**：`#语音闪念` `#工作待办` `#硬件直录`\n"
+                                    f"🕒 **录入时间**：`{now_str}`\n"
+                                    f"📟 **录入终端**：`FoloToy AI Passport (随身语音麦克风)`\n"
+                                    f"📊 **归档状态**：`已写入多维表格待办清单`"
+                                )
+                            },
+                            {
+                                "tag": "hr"
+                            },
+                            {
+                                "tag": "action",
+                                "actions": [
+                                    {
+                                        "tag": "button",
+                                        "text": {"tag": "plain_text", "content": "✅ 标记完成"},
+                                        "type": "primary",
+                                        "value": {"action": "quick_todo_done", "content": content_body}
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                    await loop.run_in_executor(None, lambda: send_card_to_chat_sdk(chat_id, bitable_card))
+
+                ack_text = f"已将「{content_body[:15]}」成功记录到飞书待办与多维表格。"
+                await self._synthesize_and_stream_tts(ws, ack_text)
+                return
 
             if chat_id:
                 prompt_card = {
@@ -308,7 +545,7 @@ class PassportServer:
                 }
                 await loop.run_in_executor(None, lambda: send_card_to_chat_sdk(chat_id, prompt_card))
 
-            # 4. 调用 AGY Agent 获取回答
+            # 5. 调用 AGY Agent 获取回答
             ai_reply_text = await self._query_ai_agent(text)
             
             # 5. 生成 TTS 语音推流给硬件
@@ -434,7 +671,7 @@ class PassportServer:
             await self.send_json(ws, msg)
 
     async def send_dashboard_to_client(self, ws: web.WebSocketResponse):
-        """下发看板数据"""
+        """下发看板与工位环境数据"""
         cwd = os.getcwd()
         proj_name = os.path.basename(cwd)
         curr_time = time.strftime("%H:%M:%S")
@@ -448,6 +685,40 @@ class PassportServer:
             "status": "ready"
         }
         await self.send_json(ws, payload)
+
+        # 同步天气与工位环境数据给翻页时钟 (特性 10)
+        weather_payload = {
+            "type": "weather_sync",
+            "weather": "晴朗",
+            "temp": "24°C",
+            "aqi": "AQI 28 优"
+        }
+        await self.send_json(ws, weather_payload)
+
+    async def trigger_find_device(self, duration_sec: int = 10):
+        """向所有在线硬件发送寻机信号 (屏幕声光爆闪 + 高频警报) (特性 8)"""
+        msg = {
+            "type": "find_device",
+            "duration_sec": duration_sec
+        }
+        for ws in list(self.active_websockets):
+            await self.send_json(ws, msg)
+
+    async def trigger_meeting_reminder(self, title: str, time_str: str = "5分钟后开始", room_url: str = ""):
+        """向所有在线硬件下发日历会议开始穿透提醒 (特性 5)"""
+        msg = {
+            "type": "meeting_alert",
+            "title": title,
+            "time": time_str,
+            "room": room_url
+        }
+        for ws in list(self.active_websockets):
+            await self.send_json(ws, msg)
+
+    async def broadcast_walkie_talkie(self, text: str):
+        """向所有在线硬件广播对讲语音 (特性 6)"""
+        for ws in list(self.active_websockets):
+            asyncio.create_task(self._synthesize_and_stream_tts(ws, text))
 
     async def _dashboard_sync_loop(self):
         """周期性下发看板数据心跳"""

@@ -1,10 +1,13 @@
 #include <Arduino.h>
+#include "esp_sleep.h"
 #include "config.h"
 #include "display_ui.h"
 #include "audio_driver.h"
 #include "network_ws.h"
 #include "battery_gauge.h"
 #include "wifi_manager.h"
+#include "adpcm_codec.h"
+#include "esp_now_mesh.h"
 
 // 官方单一 ADC 引脚电阻分压按键定义
 enum KeyType {
@@ -27,6 +30,10 @@ bool isRecording = false;
 int16_t micPcmBuffer[AUDIO_DMA_BUF_LEN];
 unsigned long lastLowBatWarning = 0;
 
+// 双击动作宏判定
+unsigned long lastReleaseTime = 0;
+KeyType lastReleasedKey = KEY_NONE;
+
 // 采样 GPIO0 ADC 分压读数并根据官方 bsp_pins.h 电压窗口判定按键
 KeyType sampleAdcKey() {
     uint32_t mv = analogReadMilliVolts(BSP_BTN_ADC_PIN);
@@ -45,6 +52,17 @@ KeyType sampleAdcKey() {
     }
     // 松开态: 3300 mV
     return KEY_NONE;
+}
+
+void enterDeepSleep() {
+    log_i("Entering Deep Sleep to conserve battery (wake on GPIO0 button)...");
+    ui.sleepDisplay();
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    
+    // 配置 GPIO0 (按键节点) 为低电平唤醒
+    esp_deep_sleep_enable_gpio_wakeup((1ULL << BSP_BTN_ADC_PIN), ESP_GPIO_WAKEUP_GPIO_LOW);
+    esp_deep_sleep_start();
 }
 
 void handleAdcButtons() {
@@ -143,23 +161,38 @@ void handleAdcButtons() {
             ui.setState(UI_STATE_THINKING);
             ui.setThinkingText("发送给飞书 Agent...");
         } else if (!keyTracker.longPressTriggered) {
-            // 短按事件派发与本地导航
-            if (releasedKey == KEY_UP) {
-                if (ui.getState() == UI_STATE_DASHBOARD) {
-                    ui.prevDashboardPage();
+            // 双击与单击动作宏派发判定 (350ms 窗口)
+            bool isDoubleClick = (releasedKey == lastReleasedKey) && (now - lastReleaseTime < 350);
+            if (isDoubleClick) {
+                lastReleasedKey = KEY_NONE; // 重置
+                if (releasedKey == KEY_UP) {
+                    net.sendButtonEvent("up", "double_click");
+                } else if (releasedKey == KEY_DOWN) {
+                    net.sendButtonEvent("down", "double_click");
+                } else if (releasedKey == KEY_OK) {
+                    net.sendButtonEvent("ok", "double_click");
                 }
-                net.sendButtonEvent("up", "short_press");
-            } else if (releasedKey == KEY_DOWN) {
-                if (ui.getState() == UI_STATE_DASHBOARD) {
-                    ui.nextDashboardPage();
-                }
-                net.sendButtonEvent("down", "short_press");
-            } else if (releasedKey == KEY_OK) {
-                if (ui.getState() == UI_STATE_DASHBOARD && ui.getDashboardPage() == 3) {
-                    // 番茄钟短按：启动/暂停倒计时
-                    ui.togglePomodoro();
-                } else {
-                    net.sendButtonEvent("ok", "short_press");
+            } else {
+                lastReleaseTime = now;
+                lastReleasedKey = releasedKey;
+                
+                // 普通单击事件与本地导航
+                if (releasedKey == KEY_UP) {
+                    if (ui.getState() == UI_STATE_DASHBOARD) {
+                        ui.prevDashboardPage();
+                    }
+                    net.sendButtonEvent("up", "short_press");
+                } else if (releasedKey == KEY_DOWN) {
+                    if (ui.getState() == UI_STATE_DASHBOARD) {
+                        ui.nextDashboardPage();
+                    }
+                    net.sendButtonEvent("down", "short_press");
+                } else if (releasedKey == KEY_OK) {
+                    if (ui.getState() == UI_STATE_DASHBOARD && ui.getDashboardPage() == 3) {
+                        ui.togglePomodoro();
+                    } else {
+                        net.sendButtonEvent("ok", "short_press");
+                    }
                 }
             }
         }
@@ -191,15 +224,18 @@ void setup() {
         log_w("CW2017 battery gauge not found, running with default battery metrics.");
     }
 
-    // 5. 初始化网络 (NVS 凭证优先 + SoftAP 配网 + UDP 自动发现)
+    // 5. 初始化网络与对等通信
     net.init();
+    espMesh.init();
 }
 
 void loop() {
+    unsigned long now = millis();
+
     // 1. 扫描与处理电阻分压按键事件
     handleAdcButtons();
 
-    // 2. 录音对讲推流
+    // 2. 录音对讲推流 (采用 4:1 IMA-ADPCM 压缩传输，降低 75% 带宽)
     if (isRecording) {
         size_t samples = audio.readRecordData(micPcmBuffer, 256);
         if (samples > 0) {
@@ -211,7 +247,9 @@ void loop() {
             int waveLevel = map(constrain(energy, 100, 3000), 100, 3000, 10, 100);
             ui.drawWaveform(waveLevel);
 
-            net.sendAudioChunk((const uint8_t*)micPcmBuffer, samples * sizeof(int16_t));
+            uint8_t adpcmBuffer[128];
+            size_t compressedBytes = AdpcmCodec::encode(micPcmBuffer, samples, adpcmBuffer);
+            net.sendAudioChunk(adpcmBuffer, compressedBytes);
         }
     }
 
@@ -222,11 +260,15 @@ void loop() {
 
     // 4. 低电量保护警报
     if (battery.isCriticalBattery()) {
-        unsigned long now = millis();
         if (now - lastLowBatWarning > 60000) {
             lastLowBatWarning = now;
             audio.playTone(TONE_ALERT);
             ui.showAlert("低电量警报", "电池电量不足 5%，请及时连接 USB 充电！", "danger");
         }
+    }
+
+    // 5. 深度睡眠休眠控制 (未充电且闲置超过 10 分钟自动进入微安休眠)
+    if (!battery.isCharging() && (now - ui.getLastActivityTime() > 600000)) {
+        enterDeepSleep();
     }
 }

@@ -152,6 +152,24 @@ void NetworkWS::handleTextMessage(const char* jsonText) {
             startOTA(String(url));
         }
     }
+    else if (strcmp(type, "find_device") == 0) {
+        // 飞书寻机指令触发
+        ui.triggerFindAlert();
+    }
+    else if (strcmp(type, "weather_sync") == 0) {
+        // 局域网天气与温湿度同步
+        const char* w = doc["weather"] | "SUNNY";
+        const char* temp = doc["temp"] | "24C";
+        const char* aqi = doc["aqi"] | "AQI 32";
+        ui.updateWeather(String(w), String(temp), String(aqi));
+    }
+    else if (strcmp(type, "meeting_alert") == 0) {
+        // 飞书日历会议到期提前提醒
+        const char* title = doc["title"] | "飞书会议";
+        const char* timeStr = doc["time"] | "5分钟后开始";
+        audio.playTone(TONE_ALERT);
+        ui.showAlert("📅 会议提醒", String(title) + "\n" + String(timeStr), "warning");
+    }
 }
 
 void NetworkWS::sendButtonEvent(const char* button, const char* action) {

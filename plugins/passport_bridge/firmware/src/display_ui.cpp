@@ -1,4 +1,5 @@
 #include "display_ui.h"
+#include "audio_driver.h"
 
 DisplayUI ui;
 
@@ -11,6 +12,9 @@ DisplayUI::DisplayUI()
       alertTitle(""),
       alertContent(""),
       alertLevel("info"),
+      weatherDesc("SUNNY"),
+      tempStr("24C"),
+      aqiStr("AQI 32"),
       twoFAActionId(""),
       twoFATitle(""),
       twoFADetails(""),
@@ -40,9 +44,14 @@ void DisplayUI::notifyActivity() {
     targetBrightness = 200;
 }
 
+void DisplayUI::sleepDisplay() {
+    lcd.setBrightness(0);
+    lcd.sleep();
+}
+
 void DisplayUI::nextDashboardPage() {
     notifyActivity();
-    dashboardPage = (dashboardPage + 1) % 4;
+    dashboardPage = (dashboardPage + 1) % 5;
     if (currentState == UI_STATE_DASHBOARD) {
         renderDashboard();
     }
@@ -50,7 +59,7 @@ void DisplayUI::nextDashboardPage() {
 
 void DisplayUI::prevDashboardPage() {
     notifyActivity();
-    dashboardPage = (dashboardPage + 3) % 4;
+    dashboardPage = (dashboardPage + 4) % 5;
     if (currentState == UI_STATE_DASHBOARD) {
         renderDashboard();
     }
@@ -72,6 +81,27 @@ void DisplayUI::resetPomodoro() {
     if (currentState == UI_STATE_DASHBOARD && dashboardPage == 3) {
         renderDashboard();
     }
+}
+
+void DisplayUI::updateWeather(const String& weather, const String& temp, const String& aqi) {
+    weatherDesc = weather;
+    tempStr = temp;
+    aqiStr = aqi;
+    if (currentState == UI_STATE_DASHBOARD && dashboardPage == 4) {
+        renderDashboard();
+    }
+}
+
+void DisplayUI::triggerFindAlert() {
+    notifyActivity();
+    for (int i = 0; i < 3; i++) {
+        lcd.fillScreen(0xFFFFFF);
+        audio.playTone(TONE_ALERT);
+        delay(100);
+        lcd.fillScreen(0xFFD600);
+        delay(100);
+    }
+    showAlert("🔍 正在寻机", "收到飞书寻机指令！设备位置已标记", "danger");
 }
 
 void DisplayUI::setState(UiState state) {
@@ -289,18 +319,21 @@ void DisplayUI::renderDashboard() {
         renderDashboardPage1();
     } else if (dashboardPage == 2) {
         renderDashboardPage2();
-    } else {
+    } else if (dashboardPage == 3) {
         renderDashboardPage3();
+    } else {
+        renderDashboardPage4();
     }
 
-    // 底部多功能按键与分页提示
     lcd.fillRect(0, 292, 240, 28, 0x181824);
     lcd.setTextColor(0x7DCFFF, 0x181824);
     lcd.setTextDatum(MC_DATUM);
     lcd.setTextSize(1);
-    String pageIndicator = "[" + String(dashboardPage + 1) + "/4] ";
+    String pageIndicator = "[" + String(dashboardPage + 1) + "/5] ";
     if (dashboardPage == 3) {
         lcd.drawString(pageIndicator + "[OK: Start/Pause] [Down: Page]", 120, 306);
+    } else if (dashboardPage == 4) {
+        lcd.drawString(pageIndicator + "[Flip Clock] [Down: Next Page]", 120, 306);
     } else {
         lcd.drawString(pageIndicator + "[Hold OK: Talk] [Up/Down: Page]", 120, 306);
     }
@@ -333,7 +366,7 @@ void DisplayUI::renderDashboardPage0() {
     lcd.drawString("FEISHU SMART DUAL-LINK", 24, 208);
     
     lcd.setTextColor(0xC0CAF5, 0x1F2335);
-    lcd.drawString("• Voice ASR : Whisper Realtime", 24, 226);
+    lcd.drawString("• Voice ASR : ADPCM 4:1 Stream", 24, 226);
     lcd.drawString("• TTS Output: Edge-TTS Native", 24, 244);
     lcd.drawString("• Bot Status: " + currentStatus, 24, 262);
 }
@@ -379,9 +412,9 @@ void DisplayUI::renderDashboardPage2() {
     lcd.drawString("Recent Card Feed:", 24, 72);
 
     lcd.setTextColor(0xCAD3F5, 0x1F2335);
-    lcd.drawString("• Interactive Cards Enabled", 24, 98);
-    lcd.drawString("• Voice PTT: OK button hold", 24, 120);
-    lcd.drawString("• Emergency Halt: Down hold", 24, 142);
+    lcd.drawString("• Bitable Quick Capture: Ready", 24, 98);
+    lcd.drawString("• Meeting Alert: Auto Pushed", 24, 120);
+    lcd.drawString("• Action Macro: Double-Click", 24, 142);
     lcd.drawString("• Barge-in Interrupt Supported", 24, 164);
 
     lcd.fillRoundRect(24, 195, 192, 70, 6, 0x181825);
@@ -402,13 +435,11 @@ void DisplayUI::renderDashboardPage3() {
     lcd.setTextSize(2);
     lcd.drawString("POMODORO", 120, 60);
 
-    // 倒计时表盘圆环
     int cx = 120;
     int cy = 145;
     int radius = 55;
     lcd.drawCircle(cx, cy, radius, 0x3B4261);
     
-    // 进度弧线
     float progress = (float)(1500 - pomodoroRemainingSec) / 1500.0f;
     int endAngle = (int)(progress * 360.0f);
     for (int a = 0; a < endAngle; a += 4) {
@@ -418,7 +449,6 @@ void DisplayUI::renderDashboardPage3() {
         lcd.fillCircle(px, py, 2, 0xFF7043);
     }
 
-    // 数字时钟展示
     int minutes = pomodoroRemainingSec / 60;
     int seconds = pomodoroRemainingSec % 60;
     char timeBuffer[10];
@@ -438,6 +468,58 @@ void DisplayUI::renderDashboardPage3() {
     }
 }
 
+// 页面 4: 复古全屏翻页天气时钟 (Flip Clock & Weather)
+void DisplayUI::renderDashboardPage4() {
+    // 顶部天气徽标卡片
+    lcd.fillRoundRect(12, 34, 216, 60, 8, 0x1F2335);
+    lcd.drawRoundRect(12, 34, 216, 60, 8, 0x3B4261);
+
+    lcd.setTextColor(0xFFD600, 0x1F2335);
+    lcd.setTextDatum(ML_DATUM);
+    lcd.setTextSize(2);
+    lcd.drawString(weatherDesc, 26, 64);
+
+    lcd.setTextColor(0x00E5FF, 0x1F2335);
+    lcd.setTextDatum(MR_DATUM);
+    lcd.drawString(tempStr + " | " + aqiStr, 214, 64);
+
+    // 中间复古翻页时钟大卡片 (小时和分钟卡片)
+    String hh = currentTimeStr.length() >= 2 ? currentTimeStr.substring(0, 2) : "12";
+    String mm = currentTimeStr.length() >= 5 ? currentTimeStr.substring(3, 5) : "00";
+
+    int cardW = 96;
+    int cardH = 100;
+    int yCard = 105;
+
+    // 小时卡片
+    lcd.fillRoundRect(18, yCard, cardW, cardH, 8, 0x24283B);
+    lcd.drawRoundRect(18, yCard, cardW, cardH, 8, 0x414868);
+    lcd.drawFastHLine(18, yCard + (cardH / 2), cardW, 0x181825); // 翻页折痕
+
+    lcd.setTextColor(0xFFFFFF, 0x24283B);
+    lcd.setTextDatum(MC_DATUM);
+    lcd.setTextSize(5);
+    lcd.drawString(hh, 18 + (cardW / 2), yCard + (cardH / 2));
+
+    // 分钟卡片
+    lcd.fillRoundRect(126, yCard, cardW, cardH, 8, 0x24283B);
+    lcd.drawRoundRect(126, yCard, cardW, cardH, 8, 0x414868);
+    lcd.drawFastHLine(126, yCard + (cardH / 2), cardW, 0x181825); // 翻页折痕
+
+    lcd.drawString(mm, 126 + (cardW / 2), yCard + (cardH / 2));
+
+    // 底部日期状态卡片
+    lcd.fillRoundRect(12, 218, 216, 66, 8, 0x1F2335);
+    lcd.drawRoundRect(12, 218, 216, 66, 8, 0x3B4261);
+
+    lcd.setTextColor(0x9ECE6A, 0x1F2335);
+    lcd.setTextDatum(MC_DATUM);
+    lcd.setTextSize(1);
+    lcd.drawString("DESKTOP COMPANION MODE", 120, 236);
+    lcd.setTextColor(0xCAD3F5, 0x1F2335);
+    lcd.drawString("Charging Dock Synced", 120, 258);
+}
+
 void DisplayUI::renderListening() {
     renderStatusBar();
     renderAvatarFace(120, 80, "listening");
@@ -449,7 +531,7 @@ void DisplayUI::renderListening() {
     
     lcd.setTextSize(1);
     lcd.setTextColor(0xAAAAAA, 0x101018);
-    lcd.drawString("Recording I2S Audio Stream", 120, 160);
+    lcd.drawString("Recording ADPCM Audio Stream", 120, 160);
     
     lcd.setTextColor(0xFF9800, 0x101018);
     lcd.drawString("Release [OK] to Send to Feishu", 120, 275);
@@ -565,7 +647,6 @@ void DisplayUI::render2FA() {
         y += 18;
     }
 
-    // 两个按键操作选择
     lcd.fillRoundRect(22, 210, 90, 36, 6, 0x00E676);
     lcd.setTextColor(0x000000, 0x00E676);
     lcd.setTextDatum(MC_DATUM);
@@ -579,7 +660,6 @@ void DisplayUI::render2FA() {
     lcd.drawString("Waiting for hardware button...", 120, 268);
 }
 
-// OTA 无线升级进度展示
 void DisplayUI::renderOTA() {
     lcd.fillRect(0, 0, 240, 320, 0x101018);
     
@@ -592,7 +672,6 @@ void DisplayUI::renderOTA() {
     lcd.setTextColor(0xAAAAAA, 0x101018);
     lcd.drawString("Wireless Firmware Upgrade", 120, 130);
 
-    // 进度条
     lcd.fillRoundRect(20, 170, 200, 16, 8, 0x222233);
     int barW = map(otaPercent, 0, 100, 0, 196);
     if (barW > 0) {
@@ -611,11 +690,11 @@ void DisplayUI::renderOTA() {
 void DisplayUI::updateBacklight() {
     unsigned long idle = millis() - lastActivityTime;
     if (idle > 120000) {
-        targetBrightness = 0; // 熄屏休眠
+        targetBrightness = 0;
     } else if (idle > 45000) {
-        targetBrightness = 40; // 节能省电
+        targetBrightness = 40;
     } else {
-        targetBrightness = 200; // 全亮正常
+        targetBrightness = 200;
     }
 
     if (currentBrightness != targetBrightness) {
@@ -631,6 +710,12 @@ void DisplayUI::updateBacklight() {
 void DisplayUI::loop() {
     unsigned long now = millis();
     updateBacklight();
+
+    // 智能桌面模式：如果在充电中且超过 45 秒无按键操作，自动切换到翻页天气时钟
+    if (battery.isCharging() && (now - lastActivityTime > 45000) && currentState == UI_STATE_DASHBOARD && dashboardPage != 4) {
+        dashboardPage = 4;
+        renderDashboard();
+    }
 
     // 独立番茄钟倒计时步进
     if (pomodoroRunning && (now - lastPomodoroTick >= 1000)) {
