@@ -322,10 +322,87 @@ class PassportServer:
         custom_action = custom_macros.get(macro_name)
 
         if custom_action and isinstance(custom_action, dict):
+            act_type = custom_action.get("action", "")
             cmd = custom_action.get("command")
             custom_desc = custom_action.get("description", desc)
             notify_feishu = custom_action.get("notify_feishu", True)
-            
+
+            # 内置动作预设拦截
+            if act_type == "feishu_checkin":
+                now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+                await self.broadcast_alert("工作签到成功", "工位状态已激活", level="info", duration_sec=4)
+                if chat_id and notify_feishu:
+                    checkin_card = {
+                        "config": {"wide_screen_mode": True},
+                        "header": {
+                            "template": "green",
+                            "title": {"content": "📍 硬件物理签到打卡完成", "tag": "plain_text"}
+                        },
+                        "elements": [
+                            {
+                                "tag": "markdown",
+                                "content": f"✅ **签到时间**：`{now_str}`\n🏷️ **设备节点**：`FoloToy AI Passport (工位端)`\n🟢 **当前状态**：`工作中 (Focus Mode)`\n\n*由硬件动作宏极速打卡触发*"
+                            }
+                        ]
+                    }
+                    send_card_to_chat_sdk(chat_id, checkin_card)
+                return
+
+            elif act_type == "emergency_stop":
+                log.warning("[PassportBridge] 动作宏触发紧急熔断 Physical Stop 信号！")
+                await self._trigger_emergency_stop()
+                await self.broadcast_alert("⚠️ 任务已紧急熔断", "已终止所有后台正在运行的任务！", level="danger", duration_sec=4)
+                if chat_id and notify_feishu:
+                    stop_card = {
+                        "config": {"wide_screen_mode": True},
+                        "header": {
+                            "template": "red",
+                            "title": {"content": "🛑 硬件动作宏触发：紧急安全熔断", "tag": "plain_text"}
+                        },
+                        "elements": [
+                            {
+                                "tag": "markdown",
+                                "content": "⚠️ **紧急熔断已执行**：已停止后台所有正在执行的 Agent 任务！"
+                            }
+                        ]
+                    }
+                    send_card_to_chat_sdk(chat_id, stop_card)
+                return
+
+            elif act_type == "start_pomodoro":
+                await self.trigger_pomodoro_start()
+                return
+
+            elif act_type == "flip_clock_sync":
+                await self.trigger_flip_clock_sync()
+                return
+
+            elif act_type == "station_broadcast":
+                await self.broadcast_walkie_talkie("工位打卡广播：工程师已就位，工作状态激活！")
+                if chat_id and notify_feishu:
+                    bc_card = {
+                        "config": {"wide_screen_mode": True},
+                        "header": {
+                            "template": "blue",
+                            "title": {"content": "📻 硬件动作宏：工位在线广播已发送", "tag": "plain_text"}
+                        },
+                        "elements": [
+                            {
+                                "tag": "markdown",
+                                "content": f"📢 已向局域网在线设备同步广播：`工程师已就位，工作状态激活！`"
+                            }
+                        ]
+                    }
+                    send_card_to_chat_sdk(chat_id, bc_card)
+                return
+
+            elif act_type == "bitable_capture":
+                if self.plugin and hasattr(self.plugin, "_send_quick_capture_demo") and chat_id:
+                    self.plugin._send_quick_capture_demo(chat_id)
+                await self.broadcast_alert("待办灵感归档", "灵感闪念已录入多维表格", level="info", duration_sec=4)
+                return
+
+            # 通用命令执行
             output_msg = ""
             if cmd:
                 try:
