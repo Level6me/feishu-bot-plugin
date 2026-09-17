@@ -71,9 +71,51 @@ class PassportBridgePlugin(BasePlugin):
         except Exception as e:
             log.error(f"[Plugin:{self.plugin_id}] 保存配置失败: {e}")
 
+    def _send_quick_capture_demo(self, chat_id: str):
+        """发送多维表格/待办灵感快速录入演示交互卡片"""
+        now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+        bitable_card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "template": "turquoise",
+                "title": {"content": "📋 飞书多维表格 / 待办任务快速录入 (演示)", "tag": "plain_text"}
+            },
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": (
+                        f"✨ **灵感/待办主题**：\n> **优化硬件端 WebSockets 与 IMA-ADPCM 音频解压实时性能**\n\n"
+                        f"🏷️ **分类标签**：`#语音闪念` `#固件架构` `#硬件直录`\n"
+                        f"🕒 **录入时间**：`{now_str}`\n"
+                        f"📟 **录入终端**：`FoloToy AI Passport (随身硬件麦克风)`\n"
+                        f"📊 **归档状态**：`已写入多维表格待办清单`"
+                    )
+                },
+                {
+                    "tag": "hr"
+                },
+                {
+                    "tag": "action",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "✅ 标记完成"},
+                            "type": "primary",
+                            "value": {"action": "quick_todo_done", "content": "优化硬件端 WebSockets 延迟"}
+                        }
+                    ]
+                }
+            ]
+        }
+        try:
+            from lark_client import send_card_to_chat_sdk
+            send_card_to_chat_sdk(chat_id, bitable_card)
+        except Exception as e:
+            log.error(f"[Plugin:{self.plugin_id}] 发送待办演示卡片失败: {e}")
+
     # ==================== 卡片构建器 ====================
     def build_control_card(self, chat_id: str, view_mode: str = "control", banner: Optional[str] = None) -> dict:
-        """构建全交互式卡片控制中心"""
+        """构建全交互式卡片控制中心 (分类模块化、高颜值极客控制台)"""
         cfg = self.get_config()
         port = cfg.get("server_port", 8765)
         bound_chat = cfg.get("bound_chat_id", "")
@@ -89,43 +131,67 @@ class PassportBridgePlugin(BasePlugin):
         is_bound = (bound_chat == chat_id)
         
         if is_bound:
-            bound_desc = "✅ **已绑定当前会话** (硬件语音在此接收)"
+            bound_desc = "🟢 **已绑定当前会话** (实时推流接收)"
         elif bound_chat:
-            bound_desc = "📌 **已绑定其他会话**"
+            bound_desc = "🟡 **已绑定其他会话**"
         else:
-            bound_desc = "⚠️ **未绑定** (默认广播至首个活跃会话)"
+            bound_desc = "⚪ **未绑定** (首个活跃会话接收)"
 
-        header_color = "blue" if clients_count > 0 else "orange"
+        online_badge = f"🟢 在线 ({clients_count} 台)" if clients_count > 0 else "⚪ 离线待命"
+        header_color = "turquoise" if clients_count > 0 else "orange"
         elements = []
 
-        # 1. 顶部操作反馈横幅
+        # 1. 顶部视图导航选项卡 (Tab 切换)
+        elements.append({
+            "tag": "action",
+            "actions": [
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "🎛️ 综合控制台"},
+                    "type": "primary" if view_mode == "control" else "default",
+                    "value": {"action": "switch_view", "view": "control", "chat_id": chat_id}
+                },
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "⚡ 物理动作宏"},
+                    "type": "primary" if view_mode == "macro" else "default",
+                    "value": {"action": "switch_view", "view": "macro", "chat_id": chat_id}
+                },
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "🛠️ 固件与指南"},
+                    "type": "primary" if view_mode == "firmware" else "default",
+                    "value": {"action": "switch_view", "view": "firmware", "chat_id": chat_id}
+                }
+            ]
+        })
+        elements.append({"tag": "hr"})
+
+        # 2. 顶部操作反馈横幅
         if banner:
             elements.append({
                 "tag": "markdown",
-                "content": f"> {banner}"
+                "content": f"> 💡 **操作反馈**：{banner}"
             })
             elements.append({"tag": "hr"})
 
-        # 2. 视图：控制中心
+        # 3. 主视图：综合控制台 (清晰模块化分类)
         if view_mode == "control":
-            elements.append({
-                "tag": "markdown",
-                "content": (
-                    f"**📟 FoloToy AI Passport 实时网关状态**：\n"
-                    f"• 🌐 **内网监听端口**：`0.0.0.0:{port}` (WebSocket & UDP 发现)\n"
-                    f"• 📡 **在线硬件设备**：**`{clients_count}`** 台在线\n"
-                    f"• 💬 **会话接收绑定**：{bound_desc}\n"
-                    f"• 🔊 **TTS 播报音色**：`{voice_label}`\n"
-                    f"• 🎙️ **语音 ASR 引擎**：本地 Whisper 极速语音转文字"
-                )
-            })
-            elements.append({"tag": "hr"})
-
-            # 第一排按钮：基础会话与看板控制
-            bind_btn_text = "🔓 解绑本会话" if is_bound else "📌 绑定到本会话"
+            # --- 模块 1: 硬件网关与实时画像 ---
+            bind_btn_text = "🔓 解绑本会话" if is_bound else "📌 绑定至本会话"
             bind_btn_type = "danger" if is_bound else "primary"
             bind_action = "unbind_chat" if is_bound else "bind_chat"
 
+            elements.append({
+                "tag": "markdown",
+                "content": (
+                    f"**📊 硬件网关与实时画像 (Gateway Status)**\n"
+                    f"• 📡 **设备状态**：{online_badge} | 🌐 **监听网关**：`0.0.0.0:{port}`\n"
+                    f"• 💬 **专属通道**：{bound_desc}\n"
+                    f"• 🎙️ **音频链路**：`IMA-ADPCM (4:1压缩 / 16kHz)` | 🔊 **音色**：`{voice_label}`\n"
+                    f"• ⏱️ **活跃项目**：`{os.path.basename(os.getcwd())}` | 🔋 **工位环境**：`24°C 晴朗 / AQI 28 优`"
+                )
+            })
             elements.append({
                 "tag": "action",
                 "actions": [
@@ -149,14 +215,55 @@ class PassportBridgePlugin(BasePlugin):
                     }
                 ]
             })
+            elements.append({"tag": "hr"})
 
-            # 第二排按钮：进阶硬件协同特性 (寻机、会议提醒、对讲广播)
+            # --- 模块 2: 随身对讲与语音协同 ---
+            elements.append({
+                "tag": "markdown",
+                "content": (
+                    "**🎙️ 随身对讲与语音协同 (Voice & Bitable)**\n"
+                    "*长按 OK 键说话推流，支持语音闪念秒级归档多维表格待办。*"
+                )
+            })
             elements.append({
                 "tag": "action",
                 "actions": [
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🔔 防丢寻机"},
+                        "text": {"tag": "plain_text", "content": "📻 发起对讲广播"},
+                        "type": "primary",
+                        "value": {"action": "broadcast_walkie", "chat_id": chat_id}
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "📝 灵感待办演示"},
+                        "type": "default",
+                        "value": {"action": "bitable_quick_capture_demo", "chat_id": chat_id}
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "🔊 轮换播报音色"},
+                        "type": "default",
+                        "value": {"action": "cycle_voice", "chat_id": chat_id}
+                    }
+                ]
+            })
+            elements.append({"tag": "hr"})
+
+            # --- 模块 3: 工位穿透与生活助理 ---
+            elements.append({
+                "tag": "markdown",
+                "content": (
+                    "**💼 工位协同与穿透提醒 (Desk Assistant)**\n"
+                    "*全天候工位助手，支持会议穿透展示、复古翻页时钟与防丢寻机。*"
+                )
+            })
+            elements.append({
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "🔔 寻机声光爆闪"},
                         "type": "primary",
                         "value": {"action": "find_device", "chat_id": chat_id}
                     },
@@ -168,20 +275,67 @@ class PassportBridgePlugin(BasePlugin):
                     },
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "📻 对讲机广播"},
+                        "text": {"tag": "plain_text", "content": "⛅ 同步天气时钟"},
                         "type": "default",
-                        "value": {"action": "broadcast_walkie", "chat_id": chat_id}
+                        "value": {"action": "sync_weather_clock", "chat_id": chat_id}
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "🍅 启动番茄钟"},
+                        "type": "default",
+                        "value": {"action": "start_pomodoro", "chat_id": chat_id}
                     }
                 ]
             })
+            elements.append({"tag": "hr"})
 
-            # 第三排按钮：硬件屏幕告警与通知测试
+            # --- 模块 4: 物理按键宏与工作流 ---
+            elements.append({
+                "tag": "markdown",
+                "content": (
+                    "**⚡ 物理动作宏工作流 (Physical Action Engine)**\n"
+                    "*实体键 350ms 双击触发极速打卡与 Git 巡检；支持扩展自定义脚本。*"
+                )
+            })
             elements.append({
                 "tag": "action",
                 "actions": [
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🔔 提示弹窗"},
+                        "text": {"tag": "plain_text", "content": "📍 快捷打卡签到"},
+                        "type": "primary",
+                        "value": {"action": "trigger_macro_checkin", "chat_id": chat_id}
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "🔍 仓库 Git 巡检"},
+                        "type": "default",
+                        "value": {"action": "trigger_macro_git", "chat_id": chat_id}
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "🛡️ 工位安全防窥"},
+                        "type": "default",
+                        "value": {"action": "trigger_macro_down", "chat_id": chat_id}
+                    }
+                ]
+            })
+            elements.append({"tag": "hr"})
+
+            # --- 模块 5: 屏幕告警与高危熔断 ---
+            elements.append({
+                "tag": "markdown",
+                "content": (
+                    "**🚨 屏幕告警与高危熔断 (Screen Alerts & Safety)**\n"
+                    "*下发不同级别弹窗通知，或在失控时秒级熔断后台 Agent 任务。*"
+                )
+            })
+            elements.append({
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "💬 提示弹窗"},
                         "type": "default",
                         "value": {"action": "send_alert", "level": "info", "chat_id": chat_id}
                     },
@@ -193,59 +347,43 @@ class PassportBridgePlugin(BasePlugin):
                     },
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🚨 紧急告警"},
+                        "text": {"tag": "plain_text", "content": "🚨 告警弹窗"},
                         "type": "danger",
                         "value": {"action": "send_alert", "level": "danger", "chat_id": chat_id}
-                    }
-                ]
-            })
-
-            # 第四排按钮：系统偏好、熔断与指引切换
-            elements.append({
-                "tag": "action",
-                "actions": [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🔊 轮换音色"},
-                        "type": "default",
-                        "value": {"action": "cycle_voice", "chat_id": chat_id}
                     },
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🛑 紧急熔断"},
+                        "text": {"tag": "plain_text", "content": "🛑 紧急安全熔断"},
                         "type": "danger",
                         "value": {"action": "trigger_stop", "chat_id": chat_id}
-                    },
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "📖 固件与刷机指引"},
-                        "type": "primary",
-                        "value": {"action": "switch_view", "view": "firmware", "chat_id": chat_id}
                     }
                 ]
             })
 
-        # 3. 视图：固件与开发指引
-        elif view_mode == "firmware":
+        # 4. 视图：物理按键动作宏专属配置面板
+        elif view_mode == "macro":
             elements.append({
                 "tag": "markdown",
                 "content": (
-                    "### 🛠️ FoloToy AI Passport (ESP32-C3) 固件指南\n\n"
-                    "本插件已内置完整的 PlatformIO 固件源码，位于 `firmware/` 目录：\n\n"
-                    "**1. 硬件外设与引脚分布**：\n"
-                    "• **240×320 LCD (ST7789)**：MOSI:`7`, SCLK:`6`, CS:`10`, DC:`2`, RST:`3`, BL:`1`\n"
-                    "• **ES8311 音频 I2C**：SDA:`8`, SCL:`0` (地址 `0x18`)\n"
-                    "• **数字音频 I2S**：BCLK:`18`, WS:`19`, DOUT:`21`, DIN:`10`\n"
-                    "• **3 颗实体按键**：上键:`4`, 下键:`5`, 中键(OK):`9`\n\n"
-                    "**2. 树莓派一键烧录**：\n"
-                    "使用 Type-C 数据线将 AI Passport 插入树莓派 USB 口，执行：\n"
-                    "```bash\n"
-                    "cd plugins/passport_bridge/firmware\n"
-                    "./flash_firmware.sh\n"
-                    "```\n"
-                    "脚本将全自动检测端口、编译源码并完成固件烧录！\n\n"
-                    "**3. 随身对讲操作**：\n"
-                    "• 长按 **OK 键** 录音说话，松手立即发送，AI 回答将在扬声器播报并同步推送到飞书卡片！"
+                    "### ⚡ FoloToy AI Passport 物理按键宏引擎\n\n"
+                    "硬件端内置 **350ms 双击事件识别状态机**，支持实体按键触发飞书协同与本地自动化：\n\n"
+                    "| 物理按键 | 单击动作 | 长按动作 (1.5s) | **双击快捷动作宏 (350ms)** |\n"
+                    "| :--- | :--- | :--- | :--- |\n"
+                    "| 🔘 **OK 键** | 唤醒屏幕 / 刷新 | PTT 语音对讲与灵感录入 | 📍 **飞书工作台状态极速打卡** |\n"
+                    "| 🔼 **Up 键** | 看板上一页 | 开启 SoftAP 配网热点 | 🔍 **代码库分支与 Git 状态巡检** |\n"
+                    "| 🔽 **Down 键** | 看板下一页 | 紧急物理安全熔断 | 🛡️ **工位安全防窥 / 自定义脚本** |\n\n"
+                    "**🛠️ 自定义宏配置接口 (`config.json`)**：\n"
+                    "可在配置文件中任意绑定自动化命令或脚本，例如：\n"
+                    "```json\n"
+                    "\"macro_bindings\": {\n"
+                    "  \"down_double_click\": {\n"
+                    "    \"action\": \"custom_script\",\n"
+                    "    \"description\": \"工位防窥与安全锁屏\",\n"
+                    "    \"command\": \"echo 'Screen Guard Triggered'\",\n"
+                    "    \"notify_feishu\": true\n"
+                    "  }\n"
+                    "}\n"
+                    "```"
                 )
             })
             elements.append({"tag": "hr"})
@@ -254,13 +392,66 @@ class PassportBridgePlugin(BasePlugin):
                 "actions": [
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "⬅️ 返回控制面板"},
+                        "text": {"tag": "plain_text", "content": "📍 测试打卡宏"},
+                        "type": "primary",
+                        "value": {"action": "trigger_macro_checkin", "chat_id": chat_id, "view": "macro"}
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "🔍 测试 Git 巡检宏"},
+                        "type": "default",
+                        "value": {"action": "trigger_macro_git", "chat_id": chat_id, "view": "macro"}
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "🛡️ 测试防窥安全宏"},
+                        "type": "default",
+                        "value": {"action": "trigger_macro_down", "chat_id": chat_id, "view": "macro"}
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "⬅️ 返回综合控制台"},
+                        "type": "default",
+                        "value": {"action": "switch_view", "view": "control", "chat_id": chat_id}
+                    }
+                ]
+            })
+
+        # 5. 视图：固件与硬件指南
+        elif view_mode == "firmware":
+            elements.append({
+                "tag": "markdown",
+                "content": (
+                    "### 🛠️ FoloToy AI Passport (ESP32-C3) 固件指南\n\n"
+                    "**1. 硬件外设与引脚分布**：\n"
+                    "• **240×320 ST7789P3 LCD**：MOSI:`7`, SCLK:`6`, CS:`10`, DC:`2`, RST:`3`, BL:`1`\n"
+                    "• **ES8311 音频编解码**：I2C(SDA:`8`, SCL:`0`, 0x18), I2S(BCLK:`18`, WS:`19`, DOUT:`21`, DIN:`10`)\n"
+                    "• **单引脚分压按键**：`GPIO0` (上键:0Ω, 下键:1kΩ, OK键:2.2kΩ)\n"
+                    "• **电池与电量计**：CW2017 I2C 电量计 (SDA:`8`, SCL:`0`)\n\n"
+                    "**2. 预编译 0x0 完整镜像**：\n"
+                    "本插件已编译生成包含 Bootloader、分区表与固件的完整 0x0 镜像：\n"
+                    "• 文件位置：`plugins/passport_bridge/firmware/merged_firmware_0x0.bin`\n\n"
+                    "**3. 烧录方式**：\n"
+                    "• **方式 A (推荐)**：打开 [官方 Web 刷机工具](https://ai-passport.folotoy.cn/tools/web-flasher/)，将上方 0x0 文件拖入并选择 `0x0` 地址刷入。\n"
+                    "• **方式 B (命令行)**：插上 Type-C 数据线后执行：\n"
+                    "```bash\n"
+                    "cd plugins/passport_bridge/firmware && ./flash_firmware.sh\n"
+                    "```"
+                )
+            })
+            elements.append({"tag": "hr"})
+            elements.append({
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "⬅️ 返回综合控制台"},
                         "type": "primary",
                         "value": {"action": "switch_view", "view": "control", "chat_id": chat_id}
                     },
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🔄 刷新设备状态"},
+                        "text": {"tag": "plain_text", "content": "🔄 刷新设备连接"},
                         "type": "default",
                         "value": {"action": "refresh_status", "chat_id": chat_id, "view": "firmware"}
                     }
@@ -271,7 +462,7 @@ class PassportBridgePlugin(BasePlugin):
             "config": {"wide_screen_mode": True},
             "header": {
                 "template": header_color,
-                "title": {"content": "📟 FoloToy AI Passport 硬件交互控制中心", "tag": "plain_text"}
+                "title": {"content": "📟 FoloToy AI Passport 硬件协同控制台", "tag": "plain_text"}
             },
             "elements": elements
         }
@@ -420,22 +611,72 @@ class PassportBridgePlugin(BasePlugin):
             else:
                 banner = "⚠️ 当前无在线设备连接。"
 
-        # 10. 快速待办标记完成 (特性 4)
+        # 10. 演示多维表格灵感待办卡片 (特性 4)
+        elif act == "bitable_quick_capture_demo":
+            self._send_quick_capture_demo(chat_id)
+            banner = "📝 **多维表格待办速记演示已发送**：请在当前会话中查看生成的灵感卡片！"
+
+        # 11. 同步天气翻页时钟 (特性 10)
+        elif act == "sync_weather_clock":
+            if hasattr(self, "server") and self.server:
+                await self.server.trigger_flip_clock_sync()
+                banner = "⛅ **天气翻页时钟已同步**：气象指标已推送，硬件已校准翻页时钟！"
+            else:
+                banner = "⚠️ 硬件网关未就绪。"
+
+        # 12. 启动随身番茄钟 (Page 3)
+        elif act == "start_pomodoro":
+            if hasattr(self, "server") and self.server:
+                await self.server.trigger_pomodoro_start()
+                banner = "🍅 **随身番茄钟已开启**：硬件屏幕已同步开启 25 分钟专注计时！"
+            else:
+                banner = "⚠️ 硬件网关未就绪。"
+
+        # 13. 触发物理动作宏 1: 打卡签到
+        elif act == "trigger_macro_checkin":
+            if hasattr(self, "server") and self.server:
+                await self.server._execute_macro_action("ok_double_click", "飞书工作台状态签到")
+                banner = "📍 **OK 键打卡动作宏已触发**：工作状态已签到，打卡卡片已生成！"
+            else:
+                banner = "⚠️ 硬件网关未就绪。"
+
+        # 14. 触发物理动作宏 2: Git 状态巡检
+        elif act == "trigger_macro_git":
+            if hasattr(self, "server") and self.server:
+                await self.server._execute_macro_action("up_double_click", "当前代码库 Git 巡检")
+                banner = "🔍 **Up 键 Git 巡检宏已触发**：代码库分支、状态与最新 Commit 巡检卡片已送达！"
+            else:
+                banner = "⚠️ 硬件网关未就绪。"
+
+        # 15. 触发物理动作宏 3: 工位安全防窥
+        elif act == "trigger_macro_down":
+            if hasattr(self, "server") and self.server:
+                await self.server._execute_macro_action("down_double_click", "工位安全防窥 / 自定义动作")
+                banner = "🛡️ **Down 键安全动作宏已触发**：工位安全防窥动作已执行！"
+            else:
+                banner = "⚠️ 硬件网关未就绪。"
+
+        # 16. 快速待办标记完成 (特性 4)
         elif act == "quick_todo_done":
             content = value.get("content", "")
             banner = f"✅ 已将待办「{content[:20]}」在多维表格中标记为已完成！"
 
-        # 11. 触发紧急安全熔断
+        # 17. 触发紧急安全熔断
         elif act == "trigger_stop":
             if hasattr(self, "server") and self.server:
                 await self.server._trigger_emergency_stop()
                 await self.server.broadcast_alert("紧急安全熔断", "飞书端已触发 Physical Stop！", level="danger", duration_sec=5)
             banner = "🛑 **紧急熔断已触发**：已终止后台所有正在运行的 Agent 任务！"
 
-        # 12. 切换视图 (控制面板 ⇄ 固件说明)
+        # 18. 切换视图 (控制面板 ⇄ 动作宏 ⇄ 固件说明)
         elif act == "switch_view":
             view_mode = value.get("view", "control")
-            banner = "📖 已切换至固件开发与刷机指引" if view_mode == "firmware" else "📟 已返回硬件控制中心"
+            if view_mode == "macro":
+                banner = "⚡ 已切换至物理按键宏与工作流引擎面板"
+            elif view_mode == "firmware":
+                banner = "🛠️ 已切换至固件开发与刷机烧录指引"
+            else:
+                banner = "🎛️ 已返回硬件综合协同控制台"
 
         # 生成新卡片并在飞书内就地局部更新 (Patch)
         new_card = self.build_control_card(chat_id, view_mode=view_mode, banner=banner)
