@@ -80,6 +80,7 @@ public:
     void setState(UiState state);
     UiState getState() const { return currentState; }
     void updateDashboard(const String& project, const String& time_str, int clients, const String& status);
+    void updateWeather(const String& weather, const String& temp, const String& aqi);
     void setThinkingText(const String& text);
     void setSpeakingText(const String& text);
     void showAlert(const String& title, const String& content, const String& level = "warning");
@@ -87,6 +88,8 @@ public:
     String get2FAActionId() const { return twoFAActionId; }
     void showOTAProgress(int percent);
     void drawWaveform(int level);
+    void triggerFindAlert();
+    void sleepDisplay();
     
     void nextDashboardPage();
     void prevDashboardPage();
@@ -98,6 +101,7 @@ public:
     bool isPomodoroRunning() const { return pomodoroRunning; }
 
     void notifyActivity();
+    unsigned long getLastActivityTime() const { return lastActivityTime; }
     void loop();
 
 private:
@@ -111,6 +115,11 @@ private:
     String alertContent;
     String alertLevel;
     
+    // 天气看板字段
+    String weatherDesc;
+    String tempStr;
+    String aqiStr;
+
     // 物理 2FA 鉴权字段
     String twoFAActionId;
     String twoFATitle;
@@ -121,7 +130,7 @@ private:
     int pomodoroRemainingSec;
     unsigned long lastPomodoroTick;
 
-    int dashboardPage;       // 0: 飞书协同, 1: 硬件诊断, 2: 飞书通知, 3: 独立番茄钟
+    int dashboardPage;       // 0: 飞书协同, 1: 硬件诊断, 2: 飞书通知, 3: 独立番茄钟, 4: 翻页天气时钟
     unsigned long alertStartTime;
     unsigned long lastAnimTime;
     unsigned long lastActivityTime;
@@ -137,6 +146,7 @@ private:
     void renderDashboardPage1(); // 硬件诊断与电量
     void renderDashboardPage2(); // 飞书通知流
     void renderDashboardPage3(); // 随身番茄钟
+    void renderDashboardPage4(); // 复古全屏翻页天气时钟
     void renderListening();
     void renderThinking();
     void renderSpeaking();

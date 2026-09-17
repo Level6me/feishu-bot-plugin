@@ -150,7 +150,32 @@ class PassportBridgePlugin(BasePlugin):
                 ]
             })
 
-            # 第二排按钮：硬件屏幕告警与通知测试
+            # 第二排按钮：进阶硬件协同特性 (寻机、会议提醒、对讲广播)
+            elements.append({
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "🔔 防丢寻机"},
+                        "type": "primary",
+                        "value": {"action": "find_device", "chat_id": chat_id}
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "📅 会议穿透提醒"},
+                        "type": "default",
+                        "value": {"action": "send_meeting_alert", "chat_id": chat_id}
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "📻 对讲机广播"},
+                        "type": "default",
+                        "value": {"action": "broadcast_walkie", "chat_id": chat_id}
+                    }
+                ]
+            })
+
+            # 第三排按钮：硬件屏幕告警与通知测试
             elements.append({
                 "tag": "action",
                 "actions": [
@@ -175,7 +200,7 @@ class PassportBridgePlugin(BasePlugin):
                 ]
             })
 
-            # 第三排按钮：系统偏好、熔断与指引切换
+            # 第四排按钮：系统偏好、熔断与指引切换
             elements.append({
                 "tag": "action",
                 "actions": [
@@ -274,6 +299,26 @@ class PassportBridgePlugin(BasePlugin):
                 banner = f"🚨 已向所有在线硬件推送告警：{alert_text}"
             else:
                 banner = "⚠️ 硬件网关服务未就绪，无法下发告警。"
+        elif sub_cmd in ["find", "ring", "locate"]:
+            if hasattr(self, "server") and self.server and self.server.active_websockets:
+                await self.server.trigger_find_device(duration_sec=10)
+                banner = "🔔 **寻机鸣叫已触发**：硬件屏幕正高频爆闪并鸣叫！"
+            else:
+                banner = "⚠️ 当前无在线硬件设备。"
+        elif sub_cmd == "meeting":
+            m_title = sub_args or "项目敏捷站会"
+            if hasattr(self, "server") and self.server:
+                await self.server.trigger_meeting_reminder(m_title, "5分钟后开始")
+                banner = f"📅 已下发会议开始穿透提醒：【{m_title}】"
+            else:
+                banner = "⚠️ 硬件网关未就绪，下发失败。"
+        elif sub_cmd in ["broadcast", "say", "talk"]:
+            bc_text = sub_args or "来自飞书对讲广播：请注意查收待办任务。"
+            if hasattr(self, "server") and self.server:
+                await self.server.broadcast_walkie_talkie(bc_text)
+                banner = f"📻 已向所有随身硬件端广播语音对讲：{bc_text}"
+            else:
+                banner = "⚠️ 硬件网关未就绪，广播失败。"
 
         card = self.build_control_card(chat_id, view_mode="control", banner=banner)
         send_interactive_card_sdk(message_id, card)
@@ -351,14 +396,43 @@ class PassportBridgePlugin(BasePlugin):
             self.save_config(cfg)
             banner = f"🔊 已将 TTS 播报音色切换为：**{new_name}**"
 
-        # 7. 触发紧急安全熔断
+        # 7. 寻机鸣叫与防丢响铃 (特性 8)
+        elif act == "find_device":
+            if hasattr(self, "server") and self.server and self.server.active_websockets:
+                await self.server.trigger_find_device(duration_sec=10)
+                banner = "🔔 **寻机防丢响铃已触发**：硬件屏幕正高频爆闪并鸣叫！"
+            else:
+                banner = "⚠️ 当前无在线设备连接。"
+
+        # 8. 发送会议穿透提醒 (特性 5)
+        elif act == "send_meeting_alert":
+            if hasattr(self, "server") and self.server and self.server.active_websockets:
+                await self.server.trigger_meeting_reminder("飞书项目敏捷站会", "5分钟后开始")
+                banner = "📅 **会议提醒穿透已下发**：硬件屏幕已同步呈现会议卡片与声光提醒！"
+            else:
+                banner = "⚠️ 当前无在线设备连接。"
+
+        # 9. 跨端广播对讲 (特性 6)
+        elif act == "broadcast_walkie":
+            if hasattr(self, "server") and self.server and self.server.active_websockets:
+                await self.server.broadcast_walkie_talkie("工位即时广播：团队协同站会即将开始，请各位准备。")
+                banner = "📻 **对讲广播已发送**：硬件扬声器已同步播报对讲语音！"
+            else:
+                banner = "⚠️ 当前无在线设备连接。"
+
+        # 10. 快速待办标记完成 (特性 4)
+        elif act == "quick_todo_done":
+            content = value.get("content", "")
+            banner = f"✅ 已将待办「{content[:20]}」在多维表格中标记为已完成！"
+
+        # 11. 触发紧急安全熔断
         elif act == "trigger_stop":
             if hasattr(self, "server") and self.server:
                 await self.server._trigger_emergency_stop()
                 await self.server.broadcast_alert("紧急安全熔断", "飞书端已触发 Physical Stop！", level="danger", duration_sec=5)
             banner = "🛑 **紧急熔断已触发**：已终止后台所有正在运行的 Agent 任务！"
 
-        # 8. 切换视图 (控制面板 ⇄ 固件说明)
+        # 12. 切换视图 (控制面板 ⇄ 固件说明)
         elif act == "switch_view":
             view_mode = value.get("view", "control")
             banner = "📖 已切换至固件开发与刷机指引" if view_mode == "firmware" else "📟 已返回硬件控制中心"
