@@ -720,6 +720,16 @@ class PassportServer:
         for ws in list(self.active_websockets):
             asyncio.create_task(self._synthesize_and_stream_tts(ws, text))
 
+    async def trigger_pomodoro_start(self):
+        """向所有在线硬件发送番茄钟专注提醒与计时联动"""
+        await self.broadcast_alert("🍅 随身番茄钟", "25分钟专注工作倒计时已开启！", level="info", duration_sec=4)
+
+    async def trigger_flip_clock_sync(self):
+        """下发最新天气气象并同步至复古大字翻页时钟"""
+        for ws in list(self.active_websockets):
+            await self.send_dashboard_to_client(ws)
+        await self.broadcast_alert("⛅ 时钟与天气同步", "气象指标与翻页时钟已校准完毕", level="info", duration_sec=3)
+
     async def _dashboard_sync_loop(self):
         """周期性下发看板数据心跳"""
         while self._running:
