@@ -3,6 +3,7 @@
 #include "display_ui.h"
 #include "audio_driver.h"
 #include "network_ws.h"
+#include "battery_gauge.h"
 
 // 官方单一 ADC 引脚电阻分压按键定义
 enum KeyType {
@@ -23,6 +24,7 @@ struct AdcKeyTracker {
 AdcKeyTracker keyTracker = { KEY_NONE, 0, false, 0, KEY_NONE };
 bool isRecording = false;
 int16_t micPcmBuffer[AUDIO_DMA_BUF_LEN];
+unsigned long lastLowBatWarning = 0;
 
 // 采样 GPIO0 ADC 分压读数并根据官方 bsp_pins.h 电压窗口判定按键
 KeyType sampleAdcKey() {
@@ -58,6 +60,11 @@ void handleAdcButtons() {
         return;
     }
 
+    // 唤醒屏幕背光与重置活动时间
+    if (rawKey != KEY_NONE) {
+        ui.notifyActivity();
+    }
+
     // 按键状态转移机
     if (rawKey != KEY_NONE && keyTracker.currentKey == KEY_NONE) {
         // 新按下瞬间
@@ -70,7 +77,8 @@ void handleAdcButtons() {
         if (!keyTracker.longPressTriggered && (now - keyTracker.pressStartTime >= LONG_PRESS_MS)) {
             keyTracker.longPressTriggered = true;
             if (rawKey == KEY_OK) {
-                // 确定键长按：启动语音对讲录音 (PTT)
+                // 确定键长按：播放提示音并启动语音对讲录音 (PTT)
+                audio.playTone(TONE_PTT_START);
                 isRecording = true;
                 net.sendVoiceStart();
                 ui.setState(UI_STATE_LISTENING);
@@ -88,16 +96,23 @@ void handleAdcButtons() {
         keyTracker.currentKey = KEY_NONE;
 
         if (releasedKey == KEY_OK && isRecording) {
-            // 确定键松开：结束对讲录音，提交飞书 Agent
+            // 确定键松开：播放轻柔截止音，提交飞书 Agent
+            audio.playTone(TONE_PTT_END);
             isRecording = false;
             net.sendVoiceEnd();
             ui.setState(UI_STATE_THINKING);
             ui.setThinkingText("发送给飞书 Agent...");
         } else if (!keyTracker.longPressTriggered) {
-            // 短按事件派发
+            // 短按事件派发与本地多页看板导航
             if (releasedKey == KEY_UP) {
+                if (ui.getState() == UI_STATE_DASHBOARD) {
+                    ui.prevDashboardPage();
+                }
                 net.sendButtonEvent("up", "short_press");
             } else if (releasedKey == KEY_DOWN) {
+                if (ui.getState() == UI_STATE_DASHBOARD) {
+                    ui.nextDashboardPage();
+                }
                 net.sendButtonEvent("down", "short_press");
             } else if (releasedKey == KEY_OK) {
                 net.sendButtonEvent("ok", "short_press");
@@ -118,15 +133,20 @@ void setup() {
     analogSetAttenuation(ADC_11db);
     pinMode(BSP_BTN_ADC_PIN, INPUT); // 外部已板载 10k 上拉电阻，不使用内部上拉
 
-    // 2. 初始化 240x320 ST7789P3 LCD 显示屏
+    // 2. 初始化 240x320 ST7789P3 LCD 显示屏与背光
     ui.init();
 
-    // 3. 初始化 ES8311 音频编解码芯片与 I2S 总线
+    // 3. 初始化 ES8311 音频编解码芯片与 I2S 总线 (并启动共享 I2C)
     if (!audio.init()) {
         log_e("Audio hardware initialization failed!");
     }
 
-    // 4. 初始化局域网通信 (Wi-Fi + UDP 发现)
+    // 4. 初始化 CW2017 电池电量计 (挂载在同一 I2C 总线 0x63)
+    if (!battery.init()) {
+        log_w("CW2017 battery gauge not found, running with default battery metrics.");
+    }
+
+    // 5. 初始化局域网通信 (Wi-Fi + UDP 发现)
     net.init();
 }
 
@@ -151,7 +171,18 @@ void loop() {
         }
     }
 
-    // 3. 刷新 UI 状态动效与网络事件
+    // 3. 周期性轮询外设与网络
+    battery.loop();
     ui.loop();
     net.loop();
+
+    // 4. 低电量保护警报提示
+    if (battery.isCriticalBattery()) {
+        unsigned long now = millis();
+        if (now - lastLowBatWarning > 60000) { // 每分钟提示一次
+            lastLowBatWarning = now;
+            audio.playTone(TONE_ALERT);
+            ui.showAlert("低电量警报", "电池电量不足 5%，请及时连接 USB 充电！", "danger");
+        }
+    }
 }
