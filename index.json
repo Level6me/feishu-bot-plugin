@@ -62,5 +62,13 @@
     "version": "2.0.0",
     "repo_url": "https://github.com/Level6me/feishu-bot-plugin",
     "description": "检查并拉取 Git 云端最新代码版本，一键自动构建热重启机器人引擎"
+  },
+  {
+    "id": "passport_bridge",
+    "name": "📟 FoloToy AI Passport 硬件随身对讲与看板网关",
+    "author": "Antigravity",
+    "version": "1.0.0",
+    "repo_url": "https://github.com/Level6me/passport-bridge",
+    "description": "基于 ESP32-C3 实体卡片的即按即说 PTT 语音对讲、桌面状态看板同步与物理安全熔断插件"
   }
 ]
