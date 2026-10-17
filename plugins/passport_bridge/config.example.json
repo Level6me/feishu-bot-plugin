@@ -1,0 +1,18 @@
+{
+  "host": "0.0.0.0",
+  "port": 8765,
+  "udp_port": 8765,
+  "gateway_name": "Antigravity 飞书控制台",
+  "gateway_id": "feishu_gw_main",
+  "external_ip": "",
+  "app_id": "YOUR_FEISHU_APP_ID",
+  "app_secret": "YOUR_FEISHU_APP_SECRET",
+  "admin_chat_id": "YOUR_FEISHU_ADMIN_CHAT_ID",
+  "data_dir": "./data",
+  "tts_voice": "zh-CN-XiaoxiaoNeural",
+  "tts_rate": "+0%",
+  "ai_model": "gemini-3.8-flash-low",
+  "ai_effort": "low",
+  "agy_bin": "agy",
+  "github_token": ""
+}
