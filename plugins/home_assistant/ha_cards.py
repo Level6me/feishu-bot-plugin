@@ -256,8 +256,8 @@ def build_dashboard_card(
                     "weight": 1,
                     "elements": [
                         {
-                            "tag": "div",
-                            "text": {"tag": "lark_md", "content": left_content}
+                            "tag": "markdown",
+                            "content": left_content
                         }
                     ]
                 }
@@ -269,8 +269,8 @@ def build_dashboard_card(
                     "weight": 1,
                     "elements": [
                         {
-                            "tag": "div",
-                            "text": {"tag": "lark_md", "content": right_content}
+                            "tag": "markdown",
+                            "content": right_content
                         }
                     ]
                 })
@@ -278,7 +278,7 @@ def build_dashboard_card(
             elements.append({
                 "tag": "column_set",
                 "flex_mode": "none",
-                "background_style": "grey",
+                "background_style": "default",
                 "columns": cols
             })
 
@@ -354,7 +354,7 @@ def build_dashboard_card(
                         "tag": "column",
                         "width": "weighted",
                         "weight": 1,
-                        "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": c_left}}]
+                        "elements": [{"tag": "markdown", "content": c_left}]
                     }
                 ]
                 if c_right:
@@ -362,11 +362,12 @@ def build_dashboard_card(
                         "tag": "column",
                         "width": "weighted",
                         "weight": 1,
-                        "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": c_right}}]
+                        "elements": [{"tag": "markdown", "content": c_right}]
                     })
                 elements.append({
                     "tag": "column_set",
                     "flex_mode": "none",
+                    "background_style": "default",
                     "columns": cols
                 })
 
