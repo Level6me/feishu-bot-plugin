@@ -145,7 +145,7 @@ def build_dashboard_card(
     all_btn_type = "primary" if current_area_id == "all" else "default"
     area_buttons.append({
         "tag": "button",
-        "text": {"tag": "plain_text", "content": "🏠 全屋总览"},
+        "text": {"tag": "plain_text", "content": "🏠 全屋"},
         "type": all_btn_type,
         "value": {"action": "ha_switch_area", "area_id": "all"}
     })
@@ -166,8 +166,19 @@ def build_dashboard_card(
                 "value": {"action": "ha_switch_area", "area_id": aid}
             })
 
+    if current_area_id not in rendered_aids and current_area_id != "all":
+        cur_obj = next((a for a in areas if a["id"] == current_area_id), None)
+        if cur_obj:
+            area_buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": cur_obj["name"]},
+                "type": "primary",
+                "value": {"action": "ha_switch_area", "area_id": current_area_id}
+            })
+
     elements.append({
         "tag": "action",
+        "layout": "flow",
         "actions": area_buttons
     })
     elements.append({"tag": "hr"})
@@ -375,6 +386,7 @@ def build_dashboard_card(
     elements.append({"tag": "hr"})
     elements.append({
         "tag": "action",
+        "layout": "flow",
         "actions": [
             {
                 "tag": "button",
