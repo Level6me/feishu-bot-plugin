@@ -41,19 +41,24 @@
 
 ## 🛠️ 硬件固件与树莓派刷机指南
 
-硬件固件已作为独立项目进行维护，工程源码路径为：[`/home/jiang/github/FoloToy-Passport-Firmware`](file:///home/jiang/github/FoloToy-Passport-Firmware)
+本插件内置了完整的 ESP32-C3 PlatformIO 嵌入式源码工程，位于 `firmware/` 目录中：
 
 ```text
-FoloToy-Passport-Firmware/
-├── platformio.ini                # PlatformIO 编译构建配置
-├── flash_firmware.sh             # 树莓派/Linux 一键编译与烧录工具
-├── include/                      # 引脚定义与外设头文件 (ST7789, ES8311, I2S)
-├── src/                          # 固件主控、UI 渲染与网络驱动
-└── assets/                       # UI 像素切片与图元资源
+plugins/passport_bridge/
+├── manifest.json
+├── config.json
+├── plugin.py
+├── ws_server.py
+├── requirements.txt
+└── firmware/                     # ESP32-C3 固件工程
+    ├── platformio.ini
+    ├── flash_firmware.sh         # 树莓派/Linux 一键编译与烧录工具
+    ├── include/                  # 引脚定义与外设头文件 (ST7789, ES8311, I2S)
+    └── src/                      # 固件主控与 UI 渲染源码
 ```
 
 ### 1. 配置 Wi-Fi
-打开 `FoloToy-Passport-Firmware/include/config.h`，填入你的局域网 Wi-Fi 名称与密码：
+打开 `firmware/include/config.h`，填入你的局域网 Wi-Fi 名称与密码：
 ```c
 #define DEFAULT_WIFI_SSID       "你的_WiFi_名称"
 #define DEFAULT_WIFI_PASSWORD   "你的_WiFi_密码"
@@ -62,7 +67,7 @@ FoloToy-Passport-Firmware/
 ### 2. 树莓派一键烧录
 用 Type-C 数据线将 AI Passport 插入树莓派 USB 端口，在终端直接运行：
 ```bash
-cd /home/jiang/github/FoloToy-Passport-Firmware
+cd firmware
 ./flash_firmware.sh
 ```
 脚本将自动安装 PlatformIO 工具链、识别串口并高速烧录固件。

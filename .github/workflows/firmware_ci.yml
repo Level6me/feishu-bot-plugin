@@ -1,0 +1,62 @@
+name: Build FoloToy AI Passport Firmware
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'plugins/passport_bridge/firmware/**'
+      - '.github/workflows/firmware_ci.yml'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: PlatformIO Compile & 0x0 Image Merge
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Cache PlatformIO Core & Packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            plugins/passport_bridge/firmware/.pio
+          key: ${{ runner.os }}-platformio-${{ hashFiles('plugins/passport_bridge/firmware/platformio.ini') }}
+          restore-keys: |
+            ${{ runner.os }}-platformio-
+
+      - name: Install PlatformIO & esptool
+        run: |
+          pip install -U platformio esptool
+
+      - name: Compile ESP32-C3 Firmware
+        run: |
+          pio run -d plugins/passport_bridge/firmware
+
+      - name: Generate Official 0x0 Merged Image
+        run: |
+          BUILD_DIR="plugins/passport_bridge/firmware/.pio/build/esp32-c3"
+          esptool.py --chip esp32c3 merge_bin -o plugins/passport_bridge/firmware/merged_firmware_0x0.bin \
+            --flash_mode dio --flash_freq 80m --flash_size 8MB \
+            0x0 "$BUILD_DIR/bootloader.bin" \
+            0x8000 "$BUILD_DIR/partitions.bin" \
+            0x10000 "$BUILD_DIR/firmware.bin"
+
+      - name: Upload 0x0 Merged Firmware Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: folotoy-passport-merged-0x0
+          path: plugins/passport_bridge/firmware/merged_firmware_0x0.bin
+          if-no-files-found: error
