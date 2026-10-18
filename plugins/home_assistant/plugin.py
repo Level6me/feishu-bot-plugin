@@ -24,11 +24,11 @@ from logger import log
 from lark_client import patch_interactive_card_sdk
 
 try:
-    from .ha_client import ha_client
-    from .cards import build_dashboard_card, build_setup_card
-except (ImportError, ValueError):
     from ha_client import ha_client
-    from cards import build_dashboard_card, build_setup_card
+    from ha_cards import build_dashboard_card, build_setup_card
+except ImportError:
+    from .ha_client import ha_client
+    from .ha_cards import build_dashboard_card, build_setup_card
 
 
 class HomeAssistantPlugin(BasePlugin):
