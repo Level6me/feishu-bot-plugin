@@ -68,8 +68,8 @@
     "name": "📟 FoloToy AI Passport 硬件随身对讲与看板网关",
     "author": "Antigravity",
     "version": "1.0.0",
-    "repo_url": "https://github.com/Level6me/passport-bridge",
-    "description": "基于 ESP32-C3 实体卡片的即按即说 PTT 语音对讲、桌面状态看板同步与物理安全熔断插件"
+    "repo_url": "https://github.com/Level6me/feishu-bot-plugin",
+    "description": "提供局域网全双工 WebSocket、UDP 服务自发现、双向语音对讲、声屏状态看板与飞书卡片联动中继"
   },
   {
     "id": "home_assistant",
@@ -80,3 +80,4 @@
     "description": "分区域全屋智能控制面板，实时状态呈现、飞书交互式卡片一键开关、Token一键绑定与秒级免思考执行"
   }
 ]
+

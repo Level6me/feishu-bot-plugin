@@ -34,3 +34,8 @@ logs/
 .DS_Store
 .vscode/
 .idea/
+
+# PlatformIO & Embedded build artifacts
+.pio/
+*.bin
+
