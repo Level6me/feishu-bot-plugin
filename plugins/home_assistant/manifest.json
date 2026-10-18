@@ -1,0 +1,9 @@
+{
+  "id": "home_assistant",
+  "name": "🏠 Home Assistant 全屋智能控制台",
+  "version": "1.0.0",
+  "author": "Level6me",
+  "description": "分区域全屋智能控制看板，支持设备状态实时呈现、飞书交互式卡片一键开关、Token一键绑定与秒级免思考执行",
+  "commands": ["/ha", "/home", "/smart"],
+  "enabled": true
+}
