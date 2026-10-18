@@ -247,7 +247,11 @@ class HomeAssistantPlugin(BasePlugin):
             return False
 
         # 1. Inquiry / Dashboard
-        if any(kw in clean for kw in ["看板", "面板", "控制板", "所有设备", "设备列表", "家里状态", "家庭状态"]):
+        ha_panel_keywords = ["家庭看板", "智能家居", "全屋智能", "家居控制", "家里状态", "家庭状态", "ha看板", "ha面板"]
+        is_ha_panel = any(kw in clean for kw in ha_panel_keywords) or (
+            any(kw in clean for kw in ["看板", "控制板", "面板"]) and any(ctx in clean for ctx in ["家", "智能", "设备", "灯", "ha", "home"])
+        )
+        if is_ha_panel or any(kw in clean for kw in ["所有设备", "设备列表"]):
             devices = cli.get_devices_by_area(self.current_area_id)
             stats = cli.get_summary_stats()
             card = b_dash(cli.areas, self.current_area_id, devices, stats, alert_text="⚡ 由 Jev 策略模型秒级调度")
@@ -288,7 +292,7 @@ class HomeAssistantPlugin(BasePlugin):
         cli, b_dash, _ = self._get_live_modules()
 
         # 1. Direct dashboard inquiry
-        if any(clean == kw for kw in ["家庭看板", "智能家居", "全屋智能", "家居控制", "控制面板"]):
+        if any(clean == kw for kw in ["家庭看板", "智能家居", "全屋智能", "家居控制", "ha控制面板", "ha面板"]):
             devices = cli.get_devices_by_area(self.current_area_id)
             stats = cli.get_summary_stats()
             card = b_dash(cli.areas, self.current_area_id, devices, stats)
