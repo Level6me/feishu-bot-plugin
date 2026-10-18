@@ -157,6 +157,75 @@ class HomeAssistantPlugin(BasePlugin):
             patch_interactive_card_sdk(card_message_id, new_card)
             return True
 
+        # 10. Toggle Jev System 1 routing
+        elif action in ["ha_toggle_jev", "ha_toggle_jev_disabled"]:
+            has_token, reason = ha_client.check_jev_token_status()
+            if not has_token:
+                # /s1 缺失 Token 时拦截并提示
+                devices = ha_client.get_devices_by_area(area_id)
+                stats = ha_client.get_summary_stats()
+                new_card = build_dashboard_card(
+                    ha_client.areas, area_id, devices, stats,
+                    alert_text="⚠️ Jev 未配置正确：检测到 /s1 未配置 TypeSafe API Token，无法开启！请先发送 /s1 完成配置。"
+                )
+                patch_interactive_card_sdk(card_message_id, new_card)
+                return True
+
+            target_state = value.get("target_state", not ha_client.is_jev_enabled())
+            ha_client.save_config(jev_enabled=target_state)
+            alert = "⚡ 已开启 Jev 秒级意图分发通道（~200ms 解析口语）" if target_state else "💤 已关闭 Jev 秒级分发，恢复通用大模型思考"
+            devices = ha_client.get_devices_by_area(area_id)
+            stats = ha_client.get_summary_stats()
+            new_card = build_dashboard_card(ha_client.areas, area_id, devices, stats, alert_text=alert)
+            patch_interactive_card_sdk(card_message_id, new_card)
+            return True
+
+        return False
+
+    def is_jev_enabled(self) -> bool:
+        """Returns True if Jev intent dispatch is enabled and valid."""
+        return ha_client.is_jev_enabled()
+
+    async def handle_nlp_intent(self, user_text: str, chat_id: str, message_id: str, session_data: dict) -> bool:
+        """Handles smart_home intent dispatched directly from Jev (System 1 Gate)."""
+        if not self.is_jev_enabled():
+            return False
+
+        clean = (user_text or "").strip()
+        if not clean:
+            return False
+
+        # 1. Inquiry / Dashboard
+        if any(kw in clean for kw in ["看板", "面板", "控制板", "所有设备", "设备列表", "家里状态", "家庭状态"]):
+            devices = ha_client.get_devices_by_area(self.current_area_id)
+            stats = ha_client.get_summary_stats()
+            card = build_dashboard_card(ha_client.areas, self.current_area_id, devices, stats, alert_text="⚡ 由 Jev 策略模型秒级调度")
+            self.send_card(chat_id, card)
+            return True
+
+        # 2. Turn off all lights / sleep
+        if any(kw in clean for kw in ["全关灯", "全屋关灯", "关掉所有灯", "我要睡觉了", "把灯都关了", "关所有灯"]):
+            lights = [eid for eid, ed in ha_client.entities.items() if ed.get("domain") in ["light", "switch"]]
+            for eid in lights:
+                await ha_client.call_service(eid.split(".")[0], "turn_off", eid)
+            self.send_text(chat_id, f"🌙 晚安！[Jev秒级调度] 已为您关闭全屋 {len(lights)} 处灯光与开关。")
+            return True
+
+        # 3. Match specific entity from text
+        matched = ha_client.match_entity_from_text(clean)
+        if matched:
+            eid, action = matched
+            domain = eid.split(".")[0]
+            service = "turn_on" if action == "turn_on" else "turn_off"
+            dev_name = ha_client.entities.get(eid, {}).get("name", eid)
+            ok, msg = await ha_client.call_service(domain, service, eid)
+            action_desc = "开启" if service == "turn_on" else "关闭"
+            if ok:
+                self.send_text(chat_id, f"⚡ [Jev秒级调度] 已为您{action_desc}【{dev_name}】。")
+            else:
+                self.send_text(chat_id, f"⚠️ [Jev秒级调度] 操作【{dev_name}】未成功: {msg}")
+            return True
+
         return False
 
     async def on_before_ai(self, user_text: str, chat_id: str, session_data: dict) -> Tuple[str, dict]:

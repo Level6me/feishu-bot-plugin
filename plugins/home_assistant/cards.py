@@ -14,7 +14,8 @@ def build_dashboard_card(
     current_area_id: str,
     devices: List[Dict[str, Any]],
     summary_stats: Dict[str, Any],
-    alert_text: Optional[str] = None
+    alert_text: Optional[str] = None,
+    jev_status: Optional[Dict[str, Any]] = None
 ) -> dict:
     """Builds the clean, area-partitioned smart home control dashboard card."""
     total = summary_stats.get("total", len(devices))
@@ -34,6 +35,75 @@ def build_dashboard_card(
             "content": status_summary
         }
     })
+
+    # 2. Jev System 1 Routing Switch & Diagnostics
+    if jev_status is None:
+        try:
+            try:
+                from .ha_client import ha_client
+            except (ImportError, ValueError):
+                from ha_client import ha_client
+            has_token, reason = ha_client.check_jev_token_status()
+            is_on = ha_client.is_jev_enabled()
+            jev_status = {
+                "has_token": has_token,
+                "enabled": is_on,
+                "reason": reason
+            }
+        except Exception:
+            jev_status = {"has_token": False, "enabled": False, "reason": "无法读取状态"}
+
+    has_token = jev_status.get("has_token", False)
+    is_jev_on = jev_status.get("enabled", False)
+
+    if not has_token:
+        # 未在 /s1 中配置 Token：开关显示灰色、disabled=True 无法操作，并显示未配置正确提示
+        elements.append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": "🤖 **Jev 秒级意图分发**：<font color='grey'>不可用</font>\n> ⚠️ **Jev 未配置正确**：检测到 `/s1` 未配置 TypeSafe API Token，秒级意图路由已停用。请先发送 `/s1` 完成配置。"
+            },
+            "extra": {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "🚫 未配置Token"},
+                "type": "default",
+                "disabled": True,
+                "value": {"action": "ha_toggle_jev_disabled", "area_id": current_area_id}
+            }
+        })
+    elif is_jev_on:
+        elements.append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": "🤖 **Jev 秒级意图分发**：<font color='green'>● 已开启</font>\n> ⚡ **极速路由中**：已接入 System 1 策略模型（~200ms 解析并分发口语指令）"
+            },
+            "extra": {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "🟢 关闭 Jev"},
+                "type": "primary",
+                "disabled": False,
+                "value": {"action": "ha_toggle_jev", "target_state": False, "area_id": current_area_id}
+            }
+        })
+    else:
+        elements.append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": "🤖 **Jev 秒级意图分发**：<font color='grey'>○ 已关闭</font>\n> 💤 **普通模式**：Jev 意图直通已关闭，所有口语指令将交由大模型思考规划"
+            },
+            "extra": {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "⚪ 开启 Jev"},
+                "type": "default",
+                "disabled": False,
+                "value": {"action": "ha_toggle_jev", "target_state": True, "area_id": current_area_id}
+            }
+        })
+
+    elements.append({"tag": "hr"})
 
     # 2. Area Navigation Tabs (Buttons)
     area_buttons = []
