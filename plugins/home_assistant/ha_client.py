@@ -74,10 +74,17 @@ class HaClient:
         return {
             "ha_url": DEFAULT_HA_URL,
             "ha_token": "",
-            "webhook_url": "http://10.0.0.2:8123/api/webhook/mcp_a58702b889b46c4567c1d420640862d3"
+            "webhook_url": "http://10.0.0.2:8123/api/webhook/mcp_a58702b889b46c4567c1d420640862d3",
+            "jev_enabled": True
         }
 
-    def save_config(self, ha_url: Optional[str] = None, ha_token: Optional[str] = None, webhook_url: Optional[str] = None) -> bool:
+    def save_config(
+        self,
+        ha_url: Optional[str] = None,
+        ha_token: Optional[str] = None,
+        webhook_url: Optional[str] = None,
+        jev_enabled: Optional[bool] = None
+    ) -> bool:
         if ha_url is not None:
             self.ha_url = ha_url.rstrip("/")
             self.config["ha_url"] = self.ha_url
@@ -87,6 +94,8 @@ class HaClient:
         if webhook_url is not None:
             self.webhook_url = webhook_url.strip()
             self.config["webhook_url"] = self.webhook_url
+        if jev_enabled is not None:
+            self.config["jev_enabled"] = bool(jev_enabled)
 
         try:
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -95,6 +104,58 @@ class HaClient:
             return True
         except Exception:
             return False
+
+    def check_jev_token_status(self) -> Tuple[bool, str]:
+        """Checks whether /s1 has a valid TypeSafe Jev API token configured.
+        
+        Returns:
+            Tuple[bool, str]: (has_token, message)
+        """
+        token = ""
+
+        # 1. Direct query from system_one_gate if in-process
+        try:
+            from system_one_gate import get_typesafe_config_state
+            ts_state = get_typesafe_config_state()
+            token = (ts_state.get("api_key") or "").strip()
+        except Exception:
+            pass
+
+        # 2. Check config module or environment variable
+        if not token:
+            try:
+                import config
+                token = (getattr(config, "TYPESAFE_API_KEY", "") or "").strip()
+            except Exception:
+                pass
+
+        if not token:
+            token = os.getenv("TYPESAFE_API_KEY", "").strip()
+
+        # 3. Read bot .env as reliable local fallback
+        if not token:
+            bot_env = "/home/jiang/github/antigravity-feishu-bot/.env"
+            if os.path.exists(bot_env):
+                try:
+                    with open(bot_env, "r", encoding="utf-8") as f:
+                        for line in f:
+                            if line.strip().startswith("TYPESAFE_API_KEY="):
+                                token = line.split("=", 1)[1].strip().strip('"').strip("'")
+                                break
+                except Exception:
+                    pass
+
+        if not token or token.lower() in ("none", "null", "your_api_key_here"):
+            return False, "未配置 TypeSafe Token（/s1 缺失 API Key）"
+
+        return True, "已正确配置 TypeSafe Token"
+
+    def is_jev_enabled(self) -> bool:
+        """Returns True only when /s1 has a token AND jev_enabled is True."""
+        has_token, _ = self.check_jev_token_status()
+        if not has_token:
+            return False
+        return self.config.get("jev_enabled", True)
 
     def _sync_to_system_mcp_config(self):
         """Automatically registers/updates Home Assistant in ~/.gemini/config/mcp_config.json."""
