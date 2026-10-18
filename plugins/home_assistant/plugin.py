@@ -13,11 +13,22 @@ import json
 import asyncio
 from typing import Tuple, Dict, Any, Optional
 
+import sys
+
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+if CURRENT_DIR not in sys.path:
+    sys.path.insert(0, CURRENT_DIR)
+
 from plugin_base import BasePlugin
 from logger import log
 from lark_client import patch_interactive_card_sdk
-from .ha_client import ha_client
-from .cards import build_dashboard_card, build_setup_card
+
+try:
+    from .ha_client import ha_client
+    from .cards import build_dashboard_card, build_setup_card
+except (ImportError, ValueError):
+    from ha_client import ha_client
+    from cards import build_dashboard_card, build_setup_card
 
 
 class HomeAssistantPlugin(BasePlugin):
