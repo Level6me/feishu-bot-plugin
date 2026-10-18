@@ -10,6 +10,7 @@ Provides:
 import os
 import re
 import json
+import time
 import asyncio
 from typing import Tuple, Dict, Any, Optional
 
@@ -76,6 +77,8 @@ class HomeAssistantPlugin(BasePlugin):
                 return True
 
             # Default: Show area-partitioned dashboard
+            if time.time() - ha_client.last_sync_time > 30:
+                await ha_client.sync_all_states()
             devices = ha_client.get_devices_by_area(self.current_area_id)
             stats = ha_client.get_summary_stats()
             card = build_dashboard_card(ha_client.areas, self.current_area_id, devices, stats)

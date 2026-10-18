@@ -29,7 +29,9 @@ CONFIG_PATH = os.path.join(PLUGIN_DATA_DIR, "config.json")
 CACHE_PATH = os.path.join(PLUGIN_DATA_DIR, "devices_cache.json")
 MCP_CONFIG_PATH = os.path.expanduser("~/.gemini/config/mcp_config.json")
 HA_STORAGE_AREA = "/home/jiang/homeassistant/.storage/core.area_registry"
+HA_STORAGE_DEVICE = "/home/jiang/homeassistant/.storage/core.device_registry"
 HA_STORAGE_ENTITY = "/home/jiang/homeassistant/.storage/core.entity_registry"
+HA_TOKEN_FILE = "/home/jiang/homeassistant/.storage/ha_token.txt"
 
 DEFAULT_HA_URL = "http://10.0.0.2:8123"
 FALLBACK_HA_URLS = ["http://10.0.0.2:8123", "http://127.0.0.1:8123", "http://localhost:8123"]
@@ -48,6 +50,17 @@ class HaClient:
         self.entities: Dict[str, Dict[str, Any]] = {}
         self.entity_lookup: Dict[str, str] = {}
         self.last_sync_time: float = 0.0
+
+        # Auto-discover local HA token if unconfigured
+        if not self.ha_token and os.path.exists(HA_TOKEN_FILE):
+            try:
+                with open(HA_TOKEN_FILE, "r", encoding="utf-8") as f:
+                    tok = f.read().strip()
+                if tok:
+                    self.ha_token = tok
+                    self.config["ha_token"] = tok
+            except Exception:
+                pass
 
         # Try to discover webhook from system MCP config if unconfigured
         if not self.webhook_url and os.path.exists(MCP_CONFIG_PATH):
@@ -185,8 +198,9 @@ class HaClient:
             pass
 
     def _load_local_storage_cache(self):
-        """Parses local core.area_registry and core.entity_registry for zero-latency initial load."""
+        """Parses local core.area_registry, core.device_registry and core.entity_registry for zero-latency initial load."""
         area_map = {}
+        self.areas.clear()
         if os.path.exists(HA_STORAGE_AREA):
             try:
                 with open(HA_STORAGE_AREA, "r", encoding="utf-8") as f:
@@ -197,6 +211,19 @@ class HaClient:
                     if aid and aname:
                         area_map[aid] = aname
                         self.areas.append({"id": aid, "name": aname})
+            except Exception:
+                pass
+
+        device_area_map = {}
+        if os.path.exists(HA_STORAGE_DEVICE):
+            try:
+                with open(HA_STORAGE_DEVICE, "r", encoding="utf-8") as f:
+                    devices_raw = json.load(f).get("data", {}).get("devices", [])
+                for d in devices_raw:
+                    did = d.get("id")
+                    daid = d.get("area_id")
+                    if did and daid:
+                        device_area_map[did] = daid
             except Exception:
                 pass
 
@@ -221,16 +248,18 @@ class HaClient:
                     if domain not in ["light", "switch", "climate", "media_player", "sensor", "binary_sensor"]:
                         continue
                     name = e.get("name") or e.get("original_name") or eid
-                    aid = e.get("area_id") or ""
+                    dev_id = e.get("device_id")
+                    aid = e.get("area_id") or device_area_map.get(dev_id) or "other"
                     aname = area_map.get(aid, "其它区域")
 
                     self.entities[eid] = {
                         "entity_id": eid,
                         "name": name,
                         "domain": domain,
-                        "area_id": aid or "other",
+                        "area_id": aid,
                         "area_name": aname,
-                        "state": "off" if domain in ["light", "switch"] else "idle"
+                        "state": "off" if domain in ["light", "switch"] else "idle",
+                        "attributes": {}
                     }
                     clean_name = name.replace(" ", "").lower()
                     self.entity_lookup[clean_name] = eid
@@ -342,11 +371,13 @@ class HaClient:
                         "domain": domain,
                         "area_id": "other",
                         "area_name": "其它区域",
-                        "state": state_val
+                        "state": state_val,
+                        "attributes": attrs
                     }
                 else:
                     self.entities[eid]["state"] = state_val
                     self.entities[eid]["name"] = name
+                    self.entities[eid]["attributes"] = attrs
 
                 clean_name = name.replace(" ", "").lower()
                 self.entity_lookup[clean_name] = eid
@@ -446,33 +477,131 @@ class HaClient:
         return await self.call_service(domain, "toggle", entity_id)
 
     def get_devices_by_area(self, area_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Returns list of controllable devices filtered by area_id."""
+        """Returns list of devices and sensors filtered by area_id."""
         res = []
         for e in self.entities.values():
             domain = e.get("domain", "")
-            if domain not in ["light", "switch", "climate", "media_player"]:
+            if domain not in ["light", "switch", "climate", "media_player", "sensor", "binary_sensor"]:
                 continue
             if not area_id or area_id == "all" or e.get("area_id") == area_id:
                 res.append(e)
         return res
 
+    def get_all_areas_status(self) -> Dict[str, Any]:
+        """Calculates rich, real-time status summary for all areas and the whole house."""
+        whole_home = {
+            "total_devices": len(self.entities),
+            "lights_total": 0,
+            "lights_on": 0,
+            "switches_total": 0,
+            "switches_on": 0,
+            "climates_total": 0,
+            "climates_active": 0,
+            "avg_temp": None,
+            "avg_humidity": None
+        }
+
+        area_data = {}
+        for a in self.areas:
+            aid = a["id"]
+            area_data[aid] = {
+                "id": aid,
+                "name": a["name"],
+                "lights_total": 0,
+                "lights_on": 0,
+                "on_light_names": [],
+                "switches_total": 0,
+                "switches_on": 0,
+                "climates": [],
+                "temps": [],
+                "humidity": [],
+                "sensors_active": []
+            }
+
+        all_temps = []
+        all_humids = []
+
+        for eid, e in self.entities.items():
+            aid = e.get("area_id", "other")
+            if aid not in area_data:
+                continue
+            dom = e.get("domain", "")
+            state = str(e.get("state", "")).lower()
+            attrs = e.get("attributes", {})
+            name = e.get("name", eid)
+
+            if dom == "light":
+                whole_home["lights_total"] += 1
+                area_data[aid]["lights_total"] += 1
+                if state == "on":
+                    whole_home["lights_on"] += 1
+                    area_data[aid]["lights_on"] += 1
+                    area_data[aid]["on_light_names"].append(name)
+            elif dom == "switch":
+                whole_home["switches_total"] += 1
+                area_data[aid]["switches_total"] += 1
+                if state == "on":
+                    whole_home["switches_on"] += 1
+                    area_data[aid]["switches_on"] += 1
+            elif dom == "climate":
+                whole_home["climates_total"] += 1
+                is_active = state not in ["off", "unavailable", "idle"]
+                if is_active:
+                    whole_home["climates_active"] += 1
+                temp = attrs.get("current_temperature") or attrs.get("temperature")
+                mode_desc = f"{state} ({temp}°C)" if temp else state
+                if state == "off":
+                    mode_desc = f"待机 ({temp}°C)" if temp else "待机"
+                area_data[aid]["climates"].append(mode_desc)
+            elif dom in ("sensor", "binary_sensor"):
+                dev_class = attrs.get("device_class")
+                unit = attrs.get("unit_of_measurement")
+                if dev_class == "temperature" or unit in ("°C", "℃"):
+                    try:
+                        v = float(state)
+                        if 0 <= v <= 60:
+                            area_data[aid]["temps"].append(v)
+                            all_temps.append(v)
+                    except Exception:
+                        pass
+                elif dev_class == "humidity" or unit == "%":
+                    try:
+                        v = float(state)
+                        if 0 <= v <= 100:
+                            area_data[aid]["humidity"].append(v)
+                            all_humids.append(v)
+                    except Exception:
+                        pass
+                elif dev_class in ("motion", "occupancy", "presence") and state == "on":
+                    area_data[aid]["sensors_active"].append(f"有人移动({name})")
+                elif dev_class in ("door", "window", "opening") and state == "on":
+                    area_data[aid]["sensors_active"].append(f"打开({name})")
+
+        if all_temps:
+            whole_home["avg_temp"] = round(sum(all_temps) / len(all_temps), 1)
+        if all_humids:
+            whole_home["avg_humidity"] = int(sum(all_humids) / len(all_humids))
+
+        return {
+            "whole_home": whole_home,
+            "areas": area_data
+        }
+
     def get_summary_stats(self) -> Dict[str, Any]:
         """Calculates total devices and active devices count."""
-        total = 0
-        total_on = 0
-        climates_on = 0
-        for e in self.entities.values():
-            domain = e.get("domain", "")
-            if domain in ["light", "switch", "climate", "media_player"]:
-                total += 1
-                if e.get("state") in ["on", "playing", "cool", "heat", "auto"]:
-                    total_on += 1
-                    if domain == "climate":
-                        climates_on += 1
+        st = self.get_all_areas_status()
+        wh = st["whole_home"]
         return {
-            "total": total,
-            "total_on": total_on,
-            "climates_on": climates_on
+            "total": wh["total_devices"],
+            "total_on": wh["lights_on"] + wh["switches_on"] + wh["climates_active"],
+            "lights_on": wh["lights_on"],
+            "lights_total": wh["lights_total"],
+            "switches_on": wh["switches_on"],
+            "switches_total": wh["switches_total"],
+            "climates_active": wh["climates_active"],
+            "climates_total": wh["climates_total"],
+            "avg_temp": wh["avg_temp"],
+            "avg_humidity": wh["avg_humidity"]
         }
 
     def match_entity_from_text(self, text: str) -> Optional[Tuple[str, str]]:
