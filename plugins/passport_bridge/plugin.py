@@ -787,6 +787,17 @@ class PassportBridgePlugin(BasePlugin):
         if not act:
             return False
 
+        handled_actions = {
+            "bind_chat", "unbind_chat", "passport_refresh_status", "push_dashboard",
+            "send_alert", "cycle_voice", "prompt_custom_speech", "find_device",
+            "sync_weather_clock", "start_pomodoro", "trigger_macro_checkin",
+            "trigger_macro_git", "trigger_macro_down", "quick_todo_done",
+            "trigger_stop", "switch_view", "set_macro", "toggle_macro_notify",
+            "reset_macros", "trigger_ota", "remove_device"
+        }
+        if act not in handled_actions:
+            return False
+
         banner = None
         view_mode = value.get("view", "control")
 
