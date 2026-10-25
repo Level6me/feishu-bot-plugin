@@ -108,14 +108,20 @@ class RpiGpioApiStatusPlugin(BasePlugin):
         if not _is_valid_url(raw_url):
             raw_url = DEFAULT_API_URL
         self.api_url = raw_url
-        self.api_token = self.config_data.get("api_token", DEFAULT_API_TOKEN)
+        # Token 优先级：环境变量 > config.json > 内置默认（真实 Token 不入库，防止泄露）
+        self.api_token = os.environ.get("RPI_LED_API_TOKEN") or self.config_data.get("api_token") or DEFAULT_API_TOKEN
 
         # 蜂鸣器网关参数
         raw_buzzer_url = self.config_data.get("buzzer_api_url", DEFAULT_BUZZER_URL).rstrip("/")
         if not _is_valid_url(raw_buzzer_url):
             raw_buzzer_url = DEFAULT_BUZZER_URL
         self.buzzer_api_url = raw_buzzer_url
-        self.buzzer_api_token = self.config_data.get("buzzer_api_token", DEFAULT_BUZZER_TOKEN)
+        self.buzzer_api_token = os.environ.get("BUZZER_API_TOKEN") or self.config_data.get("buzzer_api_token") or DEFAULT_BUZZER_TOKEN
+        if self.api_token.startswith("REDACTED") or self.buzzer_api_token.startswith("REDACTED"):
+            log.warning(
+                f"[Plugin:{self.plugin_id}] API Token 未配置或仍为占位符，请通过环境变量 "
+                "RPI_LED_API_TOKEN / BUZZER_API_TOKEN 提供真实 Token（不要提交到仓库）"
+            )
         self.buzzer_enabled = self.config_data.get("buzzer_enabled", True)
         self.buzzer_volume = int(self.config_data.get("buzzer_volume", 1))
         self.buzzer_interval = int(self.config_data.get("buzzer_interval", 15))
