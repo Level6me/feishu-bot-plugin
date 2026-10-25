@@ -712,6 +712,8 @@ class RpiGpioApiStatusPlugin(BasePlugin):
 
         elif subcmd in ["upgrade", "levelup"]:
             self.play_melody("level_up")
+            self.send_reply_text(message_id, "🆙 正在播放【角色升级 (Level Up)】提示音！")
+            return True
         elif subcmd in ["mario", "flag"]:
             self.on_startup_complete()
             self.play_melody("mario_flag")

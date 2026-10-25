@@ -28,10 +28,13 @@ PLUGIN_DATA_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "..", "plugin_dat
 CONFIG_PATH = os.path.join(PLUGIN_DATA_DIR, "config.json")
 CACHE_PATH = os.path.join(PLUGIN_DATA_DIR, "devices_cache.json")
 MCP_CONFIG_PATH = os.path.expanduser("~/.gemini/config/mcp_config.json")
-HA_STORAGE_AREA = "/home/jiang/homeassistant/.storage/core.area_registry"
-HA_STORAGE_DEVICE = "/home/jiang/homeassistant/.storage/core.device_registry"
-HA_STORAGE_ENTITY = "/home/jiang/homeassistant/.storage/core.entity_registry"
-HA_TOKEN_FILE = "/home/jiang/homeassistant/.storage/ha_token.txt"
+# HA 本地存储目录与 token 文件支持通过环境变量覆盖，避免写死个人环境路径
+_HA_STORAGE_DIR = os.getenv("HA_STORAGE_DIR", "/home/jiang/homeassistant/.storage")
+HA_STORAGE_AREA = os.path.join(_HA_STORAGE_DIR, "core.area_registry")
+HA_STORAGE_DEVICE = os.path.join(_HA_STORAGE_DIR, "core.device_registry")
+HA_STORAGE_ENTITY = os.path.join(_HA_STORAGE_DIR, "core.entity_registry")
+HA_TOKEN_FILE = os.getenv("HA_TOKEN_FILE", os.path.join(_HA_STORAGE_DIR, "ha_token.txt"))
+BOT_ENV_FILE = os.getenv("BOT_ENV_FILE", "/home/jiang/github/antigravity-feishu-bot/.env")
 
 DEFAULT_HA_URL = "http://10.0.0.2:8123"
 FALLBACK_HA_URLS = ["http://10.0.0.2:8123", "http://127.0.0.1:8123", "http://localhost:8123"]
@@ -147,7 +150,7 @@ class HaClient:
 
         # 3. Read bot .env as reliable local fallback
         if not token:
-            bot_env = "/home/jiang/github/antigravity-feishu-bot/.env"
+            bot_env = BOT_ENV_FILE
             if os.path.exists(bot_env):
                 try:
                     with open(bot_env, "r", encoding="utf-8") as f:

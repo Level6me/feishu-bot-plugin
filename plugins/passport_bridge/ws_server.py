@@ -837,7 +837,11 @@ class PassportServer:
 
     async def handle_api_tts(self, request: web.Request) -> web.Response:
         """HTTP 音频静态访问"""
-        file_id = request.match_info.get("file_id")
+        file_id = request.match_info.get("file_id") or ""
+        # 防路径遍历：file_id 只允许纯文件名，禁止包含路径分隔符或 ..
+        file_id = os.path.basename(file_id)
+        if ".." in file_id or not file_id:
+            return web.Response(status=400, text="Invalid file id")
         file_path = os.path.join(tempfile.gettempdir(), f"{file_id}.mp3")
         if os.path.exists(file_path):
             return web.FileResponse(file_path)
